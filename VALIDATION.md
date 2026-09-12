@@ -2,6 +2,23 @@
 
 Validated on 12 September 2026.
 
+## Multiplayer, construction orders, and audio update
+
+The lead coordinated separate simulation/world, multiplayer server/client, globe visualization, and audio specialists. An independent reviewer checked the core implementation, returned findings for repair, and rechecked the integrated lobby, match lifecycle, audio privacy, and configurable server address.
+
+- **47 automated tests pass**, including real WebSocket room/authority tests, four-player map and simulation cases, audio lifecycle/privacy, construction-plan lifecycle, and server-address validation.
+- The existing solo browser gameplay suite passes after integration.
+- Four real browser clients joined and started a four-human match. A separate two-human/two-AI match verified mixed slots, readiness, guest pointer commands, server ownership enforcement, own construction ghosts after deselection, cancellation cleanup, music/effects sliders and mute persistence, online menus continuing the simulation, elimination, host transfer, rematches, disconnect AI takeover, and empty-room cleanup.
+- Browser validation exercised both a same-origin proxy and an explicitly selected remote server URL.
+- Review caught stale rematch controls when a finished match's host left. Refreshing the remaining host's end screen fixed it; the browser regression passes.
+- Visual inspection caught overly dark non-host hemispheres. Camera-relative lighting fixed readability without changing fog behavior; updated screenshots were checked.
+- TypeScript and production build pass. A browser check of the built client served by Node successfully created a room, readied/started a match, advanced gameplay, and left; development hooks were absent. The GitHub Pages workflow supports a public `MULTIPLAYER_URL` setting; the lobby also accepts a server address. GitHub Pages itself does not run the multiplayer backend.
+- Docker packaging was reviewed statically; the image was not built. No external multiplayer hosting was provisioned.
+
+Current screenshots: `test-results/multiplayer-lobby.png` and `test-results/construction-orders.png`. Reproduce the multiplayer browser checks with `npm run test:multiplayer`.
+
+The following sections preserve the original two-player prototype's baseline and performance measurements; they are not a new four-player GPU benchmark.
+
 ## Specialist workflow
 
 The lead established shared interfaces and implemented the application shell, controls, HUD, and browser acceptance tests. Separate agents implemented terrain/navigation, simulation/AI, and rendering. An independent reviewer inspected the integrated changes and returned findings to the owning specialist. Review repeated after repairs and again after performance changes.
