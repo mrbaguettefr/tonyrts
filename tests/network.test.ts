@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { WebSocket } from "ws";
 import { startServer, snapshotFor } from "../server/server";
+import { planWallLine } from "../src/simulation";
 import type { ClientMessage, ServerMessage } from "../src/protocol";
 
 async function client(port: number) {
@@ -129,6 +130,56 @@ test("real websocket lobby, authority, fog, disconnect takeover and cleanup", as
     }),
   );
   assert.match((await host.next("error")).message, /Invalid command/);
+  host.send({
+    type: "command",
+    command: {
+      type: "wallLine",
+      builderId: enemy.id,
+      startCell: destination,
+      endCell: destination,
+    },
+  });
+  assert.match((await host.next("error")).message, /own/);
+  host.ws.send(
+    JSON.stringify({
+      type: "command",
+      command: {
+        type: "wallLine",
+        builderId: own.id,
+        startCell: -1,
+        endCell: destination,
+      },
+    }),
+  );
+  assert.match((await host.next("error")).message, /Invalid command/);
+  own.orders = [];
+  own.path = [];
+  const wallCell = game.world.cells.find(
+    (c) => planWallLine(game, own.id, c.id, c.id).valid,
+  )!;
+  assert.ok(wallCell);
+  host.send({
+    type: "command",
+    command: {
+      type: "wallLine",
+      builderId: own.id,
+      startCell: wallCell.id,
+      endCell: wallCell.id,
+    },
+  });
+  await until(
+    () =>
+      own.orders.some((o) => o.type === "build" && o.kind === "wall") ||
+      [...game.entities.values()].some(
+        (e) => e.kind === "wall" && e.cell === wallCell.id,
+      ),
+  );
+  assert.ok(
+    !snapshotFor(game, 1).entities.some((e) =>
+      e.orders.some((o) => o.type === "build" && o.kind === "wall"),
+    ),
+    "other players cannot see wall plans",
+  );
   guest.ws.close();
   await until(() => game.players[1].controller === "ai");
   assert.equal(server.inspectRoom(room.code)!.lobby.slots[1].connected, false);

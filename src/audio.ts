@@ -13,6 +13,11 @@ export type AudioCue =
   | "ready"
   | "victory"
   | "defeat";
+export interface AudioSettings {
+  uiSfx: number;
+  worldSfx: number;
+  music: number;
+}
 export interface AudioEngine {
   unlock(): Promise<void>;
   cue(name: AudioCue): void;
@@ -22,15 +27,15 @@ export interface AudioEngine {
     options: { running: boolean; menuOpen: boolean },
   ): void;
   reset(): void;
-  setVolumes(sfx: number, music: number): void;
-  setMuted(muted: boolean): void;
-  getSettings(): { sfx: number; music: number; muted: boolean };
+  setVolumes(volumes: AudioSettings): void;
+  getSettings(): AudioSettings;
   diagnostics(): {
     unlocked: boolean;
     musicPlaying: boolean;
     activeVoices: number;
     musicTrack: string | null;
-    muted: boolean;
+    uiSfx: number;
+    worldSfx: number;
   };
   dispose(): void;
 }
@@ -40,20 +45,27 @@ const clamp = (value: number, fallback: number) =>
 
 /** Original synthesized score and effects. No audio assets or autoplay before a gesture. */
 export function createAudio(): AudioEngine {
-  let settings = { sfx: 0.65, music: 0.24, muted: false };
+  let settings: AudioSettings = { uiSfx: 0.65, worldSfx: 0.65, music: 0.24 };
   try {
     const saved = JSON.parse(localStorage.getItem(KEY) ?? "null");
     if (saved)
       settings = {
-        sfx: clamp(saved.sfx, 0.65),
-        music: clamp(saved.music, 0.24),
-        muted: saved.muted === true,
+        uiSfx:
+          saved.muted === true ? 0 : clamp(saved.uiSfx, clamp(saved.sfx, 0.65)),
+        worldSfx:
+          saved.muted === true
+            ? 0
+            : clamp(saved.worldSfx, clamp(saved.sfx, 0.65)),
+        music: saved.muted === true ? 0 : clamp(saved.music, 0.24),
       };
   } catch {
     /* Storage can be unavailable in private/embedded browsing. */
   }
   let context: AudioContext | undefined;
-  let master: GainNode, effects: GainNode, music: GainNode;
+  let master: GainNode,
+    uiEffects: GainNode,
+    worldEffects: GainNode,
+    music: GainNode;
   let timer: ReturnType<typeof setInterval> | undefined;
   let disposed = false,
     ducked = false,
@@ -72,12 +84,13 @@ export function createAudio(): AudioEngine {
 
   function apply() {
     if (!context) return;
-    master.gain.setTargetAtTime(
-      settings.muted ? 0 : 0.7,
+    master.gain.setTargetAtTime(0.7, context.currentTime, 0.015);
+    uiEffects.gain.setTargetAtTime(settings.uiSfx, context.currentTime, 0.015);
+    worldEffects.gain.setTargetAtTime(
+      settings.worldSfx,
       context.currentTime,
       0.015,
     );
-    effects.gain.setTargetAtTime(settings.sfx, context.currentTime, 0.015);
     music.gain.setTargetAtTime(
       settings.music * (ducked ? 0.38 : 1),
       context.currentTime,
@@ -99,12 +112,12 @@ export function createAudio(): AudioEngine {
     type: OscillatorType = "sine",
     delay = 0,
     targetHz = hz,
-    musical = false,
+    channel: keyof AudioSettings = "uiSfx",
   ) {
     if (
       !context ||
       context.state !== "running" ||
-      settings.muted ||
+      settings[channel] === 0 ||
       voices.size >= 24
     )
       return;
@@ -124,7 +137,13 @@ export function createAudio(): AudioEngine {
     );
     envelope.gain.exponentialRampToValueAtTime(0.0001, start + duration);
     oscillator.connect(envelope);
-    envelope.connect(musical ? music : effects);
+    envelope.connect(
+      channel === "music"
+        ? music
+        : channel === "worldSfx"
+          ? worldEffects
+          : uiEffects,
+    );
     voices.set(oscillator, envelope);
     oscillator.onended = () => {
       oscillator.disconnect();
@@ -135,7 +154,7 @@ export function createAudio(): AudioEngine {
     oscillator.stop(start + duration + 0.015);
   }
   function allowed(key: string, interval: number) {
-    if (!context || settings.muted || context.state !== "running") return false;
+    if (!context || context.state !== "running") return false;
     const time = context.currentTime;
     if (time - (lastCue.get(key) ?? -Infinity) < interval) return false;
     lastCue.set(key, time);
@@ -175,7 +194,15 @@ export function createAudio(): AudioEngine {
       const delay = Math.max(0, nextBeat - context.currentTime);
       const track = trackIndex!;
       for (const note of musicStep(track, beat))
-        tone(note.hz, note.duration, note.amplitude, note.type, delay, note.targetHz, true);
+        tone(
+          note.hz,
+          note.duration,
+          note.amplitude,
+          note.type,
+          delay,
+          note.targetHz,
+          "music",
+        );
       nextBeat += 60 / MUSIC_TRACKS[track]!.bpm / 4;
       beat++;
       if (beat === TRACK_STEPS) {
@@ -203,14 +230,17 @@ export function createAudio(): AudioEngine {
         if (!Constructor) return;
         context = new Constructor();
         master = context.createGain();
-        effects = context.createGain();
+        uiEffects = context.createGain();
+        worldEffects = context.createGain();
         music = context.createGain();
-        effects.connect(master);
+        uiEffects.connect(master);
+        worldEffects.connect(master);
         music.connect(master);
         master.connect(context.destination);
         // Initialize gain before connecting any source, including a muted first launch.
-        master.gain.value = settings.muted ? 0 : 0.7;
-        effects.gain.value = settings.sfx;
+        master.gain.value = 0.7;
+        uiEffects.gain.value = settings.uiSfx;
+        worldEffects.gain.value = settings.worldSfx;
         music.gain.value = settings.music;
         apply();
       }
@@ -266,7 +296,7 @@ export function createAudio(): AudioEngine {
             (visible(shot.from) || visible(shot.to)) &&
             allowed("shot", 0.12)
           )
-            tone(190, 0.11, 0.1, "sawtooth", 0, 55);
+            tone(190, 0.11, 0.1, "sawtooth", 0, 55, "worldSfx");
         }
         for (const explosion of game.explosions) {
           if (
@@ -274,8 +304,8 @@ export function createAudio(): AudioEngine {
             visible(explosion.position) &&
             allowed("explosion", 0.2)
           ) {
-            tone(85, 0.5, 0.22, "sawtooth", 0, 20);
-            tone(47, 0.7, 0.18, "sine", 0, 17);
+            tone(85, 0.5, 0.22, "sawtooth", 0, 20, "worldSfx");
+            tone(47, 0.7, 0.18, "sine", 0, 17, "worldSfx");
           }
         }
         if (!ended && (game.finished || game.players[team]?.eliminated)) {
@@ -289,26 +319,22 @@ export function createAudio(): AudioEngine {
       initialized = true;
     },
     reset,
-    setVolumes(sfx, musicVolume) {
-      settings.sfx = clamp(sfx, settings.sfx);
-      settings.music = clamp(musicVolume, settings.music);
-      save();
-    },
-    setMuted(muted) {
-      settings.muted = muted;
+    setVolumes(volumes) {
+      settings.uiSfx = clamp(volumes.uiSfx, settings.uiSfx);
+      settings.worldSfx = clamp(volumes.worldSfx, settings.worldSfx);
+      settings.music = clamp(volumes.music, settings.music);
       save();
     },
     getSettings: () => ({ ...settings }),
     diagnostics: () => ({
       unlocked: context?.state === "running",
       musicPlaying:
-        !!timer &&
-        context?.state === "running" &&
-        !settings.muted &&
-        settings.music > 0,
+        !!timer && context?.state === "running" && settings.music > 0,
       activeVoices: voices.size,
-      musicTrack: trackIndex === undefined ? null : MUSIC_TRACKS[trackIndex]!.title,
-      muted: settings.muted,
+      musicTrack:
+        trackIndex === undefined ? null : MUSIC_TRACKS[trackIndex]!.title,
+      uiSfx: settings.uiSfx,
+      worldSfx: settings.worldSfx,
     }),
     dispose() {
       disposed = true;
@@ -324,7 +350,8 @@ export function createAudio(): AudioEngine {
       reset();
       if (context) {
         master.disconnect();
-        effects.disconnect();
+        uiEffects.disconnect();
+        worldEffects.disconnect();
         music.disconnect();
         void context.close().catch(() => {});
       }

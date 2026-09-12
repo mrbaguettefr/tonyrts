@@ -1,3 +1,4 @@
+import { wallCells, wallSpans, wallBlocks, type WallSpan } from "./walls";
 import type {
   BuildingKind,
   Entity,
@@ -11,6 +12,7 @@ import type {
   UnitKind,
   Vec3,
   World,
+  WallPreview,
 } from "./types";
 const spec = (
   name: string,
@@ -42,6 +44,21 @@ const spec = (
   size,
 });
 export const SPECS: Record<Kind, Spec> = {
+  wall: spec(
+    "Wall",
+    "Blocks ground forces and fire; turrets fire over",
+    true,
+    900,
+    0,
+    0,
+    0,
+    0,
+    1,
+    25,
+    10,
+    4,
+    1.2,
+  ),
   commander: spec(
     "Commander",
     "Armored command & construction",
@@ -103,8 +120,8 @@ export const SPECS: Record<Kind, Spec> = {
     1,
   ),
   heavy: spec(
-    "Heavy",
-    "Heavy assault walker",
+    "Heavy Tank",
+    "Twin-barrel armored assault tank",
     false,
     1100,
     3.2,
@@ -188,6 +205,8 @@ interface Internal {
   occupancy: string;
   los: Map<number, Uint8Array>;
   mobileCounts: number[];
+  walls?: Entity[];
+  wallSpans?: WallSpan[];
 }
 const internals = new WeakMap<Game, Internal>();
 const state = (g: Game) => internals.get(g)!;
@@ -323,6 +342,114 @@ export function canPlace(
     reason = "Factory requires clear exits";
   return { valid: !reason, reason };
 }
+export function planWallLine(
+  g: Game,
+  builderId: number,
+  start: number,
+  end: number,
+  append = false,
+): WallPreview {
+  const builder = g.entities.get(builderId);
+  const cells = wallCells(g.world, start, end);
+  let reason =
+    !builder || !isBuilder(builder) || builder.hp <= 0
+      ? "Select a builder"
+      : g.finished || g.winner !== null || g.players[builder.team].eliminated
+        ? "Player is inactive"
+        : !cells.length
+          ? "Invalid wall line"
+          : cells.length > 64
+            ? "Wall line is too long"
+            : "";
+  let orders = 0,
+    remainingWork = 0;
+  if (!reason && builder)
+    for (const cell of cells) {
+      if (!g.visible[builder.team][cell]) {
+        reason = "Requires current vision";
+        break;
+      }
+      const existing = [...g.entities.values()].find(
+        (e) => e.team === builder.team && e.kind === "wall" && e.cell === cell,
+      );
+      const queued =
+        append &&
+        builder.orders.some(
+          (o) => o.type === "build" && o.kind === "wall" && o.cell === cell,
+        );
+      if (queued || existing?.progress === 1) continue;
+      orders++;
+      if (!existing) {
+        const placement = canPlace(g, builder.team, "wall", cell);
+        if (!placement.valid) {
+          reason = placement.reason;
+          break;
+        }
+      }
+      remainingWork += existing ? 1 - existing.progress : 1;
+    }
+  if (!reason && orders + (append ? builder!.orders.length : 0) > 64)
+    reason = "Order queue is full";
+  return {
+    cells,
+    valid: !reason,
+    reason,
+    metal: Math.ceil(remainingWork * SPECS.wall.metal),
+    energy: Math.ceil(remainingWork * SPECS.wall.energy),
+  };
+}
+export function issueWallLine(
+  g: Game,
+  builderId: number,
+  start: number,
+  end: number,
+  append = false,
+): WallPreview {
+  const plan = planWallLine(g, builderId, start, end, append);
+  if (!plan.valid) return plan;
+  const builder = g.entities.get(builderId)!;
+  const cells = plan.cells.filter(
+    (cell) =>
+      ![...g.entities.values()].some(
+        (e) =>
+          e.team === builder.team &&
+          e.kind === "wall" &&
+          e.cell === cell &&
+          e.progress === 1,
+      ) &&
+      !(
+        append &&
+        builder.orders.some(
+          (o) => o.type === "build" && o.kind === "wall" && o.cell === cell,
+        )
+      ),
+  );
+  cells.forEach((cell, i) =>
+    issueOrder(
+      g,
+      [builderId],
+      { type: "build", kind: "wall", cell },
+      append || i > 0,
+    ),
+  );
+  return plan;
+}
+function nearestEnemyWall(g: Game, e: Entity): Entity | undefined {
+  return [...g.entities.values()]
+    .filter(
+      (w) =>
+        w.kind === "wall" &&
+        w.team !== e.team &&
+        w.hp > 0 &&
+        g.visible[e.team][w.cell] &&
+        weaponLos(g, e, w),
+    )
+    .sort(
+      (a, b) =>
+        g.world.distance(e.cell, a.cell) - g.world.distance(e.cell, b.cell) ||
+        a.id - b.id,
+    )[0];
+}
 export function issueOrder(
   g: Game,
   ids: number[],
@@ -441,7 +568,7 @@ function updateFog(g: Game): void {
   for (const visible of g.visible) visible.fill(0);
   const cache = state(g).sight;
   for (const e of g.entities.values()) {
-    if (e.progress < 1) continue;
+    if (e.progress < 1 || SPECS[e.kind].sight <= 0) continue;
     const key = `${e.cell}:${SPECS[e.kind].sight}`;
     let cells = cache.get(key);
     if (!cells) {
@@ -580,6 +707,28 @@ function approach(
   move(g, e, target, dt, blocked);
   return false;
 }
+export function weaponLos(
+  g: Game,
+  e: Entity,
+  target: Entity,
+  from = e.cell,
+): boolean {
+  if (!los(g, from, target.cell)) return false;
+  if (e.kind === "turret") return true;
+  const spans =
+    state(g).wallSpans ??
+    wallSpans(
+      g.world,
+      [...g.entities.values()].filter((e) => e.kind === "wall" && e.hp > 0),
+    );
+  return !spans.some(
+    (span) =>
+      span.owner !== target.id &&
+      span.owner !== e.id &&
+      (g.entities.get(span.owner)?.hp ?? 0) > 0 &&
+      wallBlocks(g.world.cells[from].position, target.position, span),
+  );
+}
 function nearestEnemy(g: Game, e: Entity): Entity | undefined {
   let target: Entity | undefined,
     best = Infinity;
@@ -590,7 +739,7 @@ function nearestEnemy(g: Game, e: Entity): Entity | undefined {
     if (
       distance < best &&
       distance <= SPECS[e.kind].range &&
-      los(g, e.cell, candidate.cell)
+      weaponLos(g, e, candidate)
     ) {
       target = candidate;
       best = distance;
@@ -605,7 +754,7 @@ function seekFiringPosition(
   target: Entity,
   dt: number,
   blocked: Set<number>,
-): void {
+): boolean {
   const range = SPECS[e.kind].range;
   const previous = state(g).goal.get(e.id);
   if (
@@ -613,10 +762,10 @@ function seekFiringPosition(
     e.path.length &&
     !blocked.has(previous) &&
     g.world.distance(previous, target.cell) <= range &&
-    los(g, previous, target.cell)
+    weaponLos(g, e, target, previous)
   ) {
     move(g, e, previous, dt, blocked);
-    return;
+    return true;
   }
   const choices = g.world.cells
     .filter(
@@ -624,7 +773,7 @@ function seekFiringPosition(
         c.passable &&
         !blocked.has(c.id) &&
         g.world.distance(c.id, target.cell) <= range &&
-        los(g, c.id, target.cell),
+        weaponLos(g, e, target, c.id),
     )
     .sort(
       (a, b) => g.world.distance(e.cell, a.id) - g.world.distance(e.cell, b.id),
@@ -636,9 +785,10 @@ function seekFiringPosition(
       e.path = route[0] === e.cell ? route.slice(1) : route;
       state(g).goal.set(e.id, cell.id);
       move(g, e, cell.id, dt, blocked);
-      return;
+      return true;
     }
   }
+  return false;
 }
 
 function ai(g: Game, team: Team): void {
@@ -819,6 +969,10 @@ export function tick(g: Game, dt: number): void {
   }
   g.shots = g.shots.filter((x) => (x.age += dt) < x.duration);
   g.explosions = g.explosions.filter((x) => (x.age += dt) < x.duration);
+  s.walls = [...g.entities.values()].filter(
+    (e) => e.kind === "wall" && e.hp > 0,
+  );
+  s.wallSpans = wallSpans(g.world, s.walls);
   const blocked = occupied(g),
     occupancy = [...blocked].join(",");
   if (s.occupancy !== occupancy) {
@@ -849,7 +1003,7 @@ export function tick(g: Game, dt: number): void {
     if (
       target &&
       g.world.distance(e.cell, target.cell) <= sp.range &&
-      los(g, e.cell, target.cell)
+      weaponLos(g, e, target)
     ) {
       if (e.cooldown === 0) {
         e.cooldown = sp.cooldown;
@@ -861,14 +1015,19 @@ export function tick(g: Game, dt: number): void {
           team: e.team,
           age: 0,
           duration: 0.25,
+          ...(e.kind === "heavy" ? { heavy: true } : {}),
         });
       }
     } else if (o) {
       if (o.type === "move" || o.type === "attackMove") {
         if (move(g, e, o.cell, dt, blocked)) finish(e, g);
-      } else if (o.type === "attack" && target)
-        seekFiringPosition(g, e, target, dt, blocked);
-      else if (o.type === "build") {
+      } else if (o.type === "attack" && target) {
+        if (!seekFiringPosition(g, e, target, dt, blocked)) {
+          const barrier = nearestEnemyWall(g, e);
+          if (barrier && barrier.id !== target.id && e.orders.length < 64)
+            e.orders.unshift({ type: "attack", target: barrier.id });
+        }
+      } else if (o.type === "build") {
         let site = [...g.entities.values()].find(
           (b) => b.team === e.team && b.kind === o.kind && b.cell === o.cell,
         );
@@ -876,9 +1035,18 @@ export function tick(g: Game, dt: number): void {
           finish(e, g);
           continue;
         }
-        if (!site && !canPlace(g, e.team, o.kind, o.cell).valid) {
-          finish(e, g);
-          continue;
+        if (!site) {
+          const placement = canPlace(g, e.team, o.kind, o.cell);
+          if (!placement.valid) {
+            if (o.kind === "wall")
+              g.messages.push({
+                text: `Wall segment skipped: ${placement.reason}.`,
+                time: g.time,
+                team: e.team,
+              });
+            finish(e, g);
+            continue;
+          }
         }
         if (
           approach(
@@ -895,6 +1063,10 @@ export function tick(g: Game, dt: number): void {
             site = add(g, e.team, o.kind, o.cell, 0);
             blocked.add(site.cell);
             s.routes.clear();
+            if (site.kind === "wall") {
+              s.walls!.push(site);
+              s.wallSpans = wallSpans(g.world, s.walls!);
+            }
           }
           const b = site,
             bsp = SPECS[b.kind],
@@ -995,6 +1167,8 @@ export function tick(g: Game, dt: number): void {
         size: SPECS[e.kind].size * 2,
       });
     }
+  s.wallSpans = undefined;
+  s.walls = undefined;
   if (defeated.size) {
     for (const e of g.entities.values())
       e.orders = e.orders.filter(

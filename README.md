@@ -53,28 +53,36 @@ The server validates commands and sends each player only their own state and vis
 
 ## Play
 
-Start by placing metal extractors on gold deposits and energy generators on open terrain. Build a land factory, select it, and queue scouts, tanks, constructors, or heavy walkers. Scout unexplored terrain, defend your commander, and eliminate the enemy commander.
+Start by placing metal extractors on gold deposits and energy generators on open terrain. Build a land factory, select it, and queue scouts, tanks, constructors, or heavy tanks. Scout unexplored terrain, defend your commander, and eliminate the enemy commander.
+
+Enemy buildings remain as dim silhouettes at their last observed location after leaving sight, including their last observed construction state. Scout the location again to confirm whether they still exist. These memories cannot be selected or targeted, and hidden changes never update them.
+
+Select a commander or constructor and press **Y** to build walls. Drag a connected line, check its total cost, and release to queue construction; click for a single segment or hold Shift to append. Every segment costs **25 metal / 10 energy**, takes **4 seconds** at full funding, and has **900 HP**. Walls block friendly and enemy ground units and ordinary gunfire. Turrets fire over walls, while terrain still blocks their shots. Walls give no vision and do not conceal units from scouting. Destroy a segment to open a route; leave gaps for your own forces because gates are not available.
+
+The Heavy Tank has wide tracks, thick armor, and twin barrels firing together as one attack. Completed mobile units below **35% health** emit smoke that intensifies as their health falls. Smoke respects fog of war and freezes during solo pause.
 
 Queued construction orders appear as numbered wireframe buildings and footprint rings on the globe, even when their builder is deselected. Selected builders also show connecting construction routes. Plans disappear when canceled, when the builder is destroyed, or when a real construction site takes over. Other players cannot see your planned orders.
 
 Resources are spent continuously while building. A shortage slows construction; the commander supplies baseline income. Constructors and the commander can resume unfinished structures with a right click. Factory queues pause at the 100-mobile-unit limit, including the commander.
 
-| Control                         | Action                                                                |
-| ------------------------------- | --------------------------------------------------------------------- |
-| Left click / drag               | Select / box select                                                   |
-| Shift + selection               | Add or remove selection                                               |
-| Right click                     | Move, attack visible enemy, resume construction, or set factory rally |
-| Shift + command                 | Queue orders                                                          |
-| WASD / arrow keys / middle drag | Rotate around the planet                                              |
-| Right drag                      | Alternate camera rotation                                             |
-| Scroll                          | Zoom from the surface to the whole globe                              |
-| F / M / X                       | Attack move / move mode / stop                                        |
-| Q / E / R / T                   | Four contextual construction or production options                    |
-| Ctrl + 1–9 / 1–9                | Assign / recall control groups                                        |
-| Home                            | Select and focus your commander                                       |
-| Esc                             | Cancel command mode or pause/resume                                   |
+| Control                         | Action                                                                    |
+| ------------------------------- | ------------------------------------------------------------------------- |
+| Left click / drag               | Select / box select                                                       |
+| Double-click a unit             | Select friendly units of the same type currently in view; Shift adds them |
+| Shift + selection               | Add or remove selection                                                   |
+| Right click                     | Move, attack visible enemy, resume construction, or set factory rally     |
+| Shift + command                 | Queue orders                                                              |
+| WASD / arrow keys / middle drag | Rotate around the planet                                                  |
+| Right drag                      | Alternate camera rotation                                                 |
+| Scroll                          | Zoom from the surface to the whole globe                                  |
+| F / M / X                       | Attack move / move mode / stop                                            |
+| Q / E / R / T / Y               | Contextual construction or production; Y selects walls                    |
+| Y, then left drag               | Preview and queue a wall line; Shift appends                              |
+| Ctrl + 1–9 / 1–9                | Assign / recall control groups                                            |
+| Home                            | Select and focus your commander                                           |
+| Esc                             | Cancel command mode or pause/resume                                       |
 
-The speaker control opens separate **Sound effects** and **Music** volume sliders plus master mute. Three original synthesized industrial RTS tracks—**Iron Mobilization**, **Continental Siege**, and **Global War Machine**—combine driving bass, heavy drums, metallic percussion, and arranged buildups and breakdowns. Playback starts with a random track, then cycles through the three in order. The score accompanies distinct selection, movement, construction, production, combat, and outcome cues. Sound unlocks after a user gesture; volume and mute preferences persist on the device. Effects respect fog of war.
+The speaker control opens three independent volume sliders: **UI SFX**, **World SFX**, and **Music**. UI SFX controls selections, orders, interface cues, and alerts; World SFX controls combat shots and explosions. Set any slider to zero to silence that channel. Three original synthesized industrial RTS tracks—**Iron Mobilization**, **Continental Siege**, and **Global War Machine**—combine driving bass, heavy drums, metallic percussion, and arranged buildups and breakdowns. Playback starts with a random track, then cycles through the three in order. The score accompanies distinct selection, movement, construction, production, combat, and outcome cues. Sound unlocks after a user gesture; all three volume preferences persist on the device. Older combined effects settings initialize both effects sliders; a previously muted mix initializes all sliders at zero. Effects respect fog of war.
 
 The other top-right controls open help and the command menu. Solo play pauses when the window loses focus; online matches continue. Restart solo games with the same seed or return to the multiplayer lobby after a match.
 
@@ -87,7 +95,9 @@ The other top-right controls open help and the command menu. Solo play pauses wh
 - `src/types.ts`: shared terrain, entity, command, simulation, and rendering interfaces.
 - `server/server.ts`: authoritative rooms, command validation, 20 Hz simulation, 10 Hz player-filtered snapshots, disconnect handling, and static hosting.
 - `src/network.ts`, `src/protocol.ts`, and `src/lobby.ts`: WebSocket client, shared protocol, and lobby interface.
-- `src/build-plans.ts` and `src/audio.ts`: private construction-plan visualization data and procedural audio.
+- `src/build-plans.ts`, `src/building-memory.ts`, and `src/smoke.ts`: private construction plans, observed enemy building history, and bounded damage smoke.
+- `src/walls.ts`: deterministic connected wall lines and shared barrier geometry for rendering and combat.
+- `src/audio.ts`: procedural audio with independent UI, world, and music channels.
 
 Unit costs and combat balance are centralized in `SPECS`. Seeded terrain and autonomous AI decisions are repeatable. The app uses a 20 Hz simulation with smoothed rendering. UI fonts are requested from Google Fonts, with local system fallbacks; all game geometry is generated locally.
 
@@ -103,7 +113,7 @@ npm run benchmark
 npm run test:browser -- --benchmark
 ```
 
-The multiplayer browser suite starts an isolated authoritative server and four browser clients, exercises mixed human/AI and all-human rooms, and checks non-host commands, construction plans, audio settings, elimination, host transfer, rematches, and disconnect takeover. It also verifies that rooms clean up after everyone leaves.
+The multiplayer browser suite starts an isolated authoritative server and four browser clients, exercises mixed human/AI and all-human rooms, and checks non-host commands, construction plans, wall dragging, remembered enemy buildings, three audio channels, elimination, host transfer, rematches, and disconnect takeover. It also verifies that rooms clean up after everyone leaves.
 
 The solo browser suite starts an isolated local Vite server, exercises actual pointer/HUD actions, and saves screenshots to `test-results/`. Set `BASE_URL` to test an already running development server. Set `CHROMIUM_PATH` if using an existing Chromium installation. Development-only test hooks are excluded from the production bundle.
 

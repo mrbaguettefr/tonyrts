@@ -1,5 +1,7 @@
 import * as THREE from "three";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
+import { SmokePool, SMOKE_LIMIT } from "./smoke";
+import { wallSpans } from "./walls";
 import { gatherBuildPlans } from "./build-plans";
 import { SPECS, canPlace } from "./simulation";
 import type { Entity, Game, Kind, RenderState, SceneApi, Vec3 } from "./types";
@@ -217,8 +219,8 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
     const dark = 0x26353d,
       steel = 0x8caaa9,
       color = TEAM[team];
-    if (kind === "commander" || kind === "heavy" || kind === "constructor") {
-      const s = kind === "commander" ? 1.15 : kind === "heavy" ? 1 : 0.78;
+    if (kind === "commander" || kind === "constructor") {
+      const s = kind === "commander" ? 1.15 : 0.78;
       box(-0.43, 0.48, 0, 0.48, 0.85, 0.66, dark);
       box(0.43, 0.48, 0, 0.48, 0.85, 0.66, dark);
       box(0, 1.2, 0, 1.3, 0.82, 0.72, color);
@@ -231,6 +233,29 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
       result.scale(s, s, s);
       models.set(key, result);
       return result;
+    } else if (kind === "heavy") {
+      box(-1.05, 0.45, 0, 0.65, 0.8, 2.8, dark);
+      box(1.05, 0.45, 0, 0.65, 0.8, 2.8, dark);
+      for (const side of [-1, 1]) {
+        box(side * 1.08, 0.88, 0, 0.68, 0.18, 2.65, steel);
+        for (let z = -1; z <= 1; z += 0.5)
+          box(side * 1.39, 0.42, z, 0.06, 0.44, 0.22, steel);
+      }
+      box(0, 0.85, 0, 1.75, 0.7, 2.3, steel);
+      box(0, 1.04, 0.98, 1.7, 0.48, 0.3, color);
+      cylinder(0, 1.24, -0.2, 0.83, 0.25, dark);
+      box(0, 1.63, -0.2, 1.6, 0.64, 1.25, color);
+      box(0, 1.99, -0.25, 0.8, 0.14, 0.65, steel);
+      for (const side of [-1, 1]) {
+        box(side * 0.44, 1.65, 1.17, 0.27, 0.28, 1.9, dark);
+        box(side * 0.44, 1.65, 2.1, 0.36, 0.34, 0.3, steel);
+        box(side * 0.7, 1.28, -1, 0.22, 0.75, 0.25, dark);
+        box(side * 0.68, 1.02, 1.18, 0.2, 0.15, 0.06, 0xc4ffff);
+      }
+    } else if (kind === "wall") {
+      box(0, 0.2, 0, 1.65, 0.4, 1.65, dark);
+      box(0, 1.2, 0, 1.3, 2, 1.3, steel);
+      box(0, 2.22, 0, 1.5, 0.22, 1.5, color);
     } else if (kind === "tank" || kind === "scout") {
       box(-0.64, 0.35, 0, 0.4, 0.5, 1.65, dark);
       box(0.64, 0.35, 0, 0.4, 0.5, 1.65, dark);
@@ -308,6 +333,84 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
     attribute.addUpdateRange(0, mesh.count * 16);
     attribute.needsUpdate = true;
   }
+  const ghostMaterial = new THREE.MeshBasicMaterial({
+    vertexColors: true,
+    color: 0x72848b,
+    transparent: true,
+    opacity: 0.38,
+    depthWrite: false,
+  });
+  const ghostBatches = new Map<string, THREE.InstancedMesh>();
+  const wallBatches = new Map<number, THREE.InstancedMesh>();
+  const spanGeometry = new THREE.BoxGeometry(0.9, 2, 1);
+  spanGeometry.translate(0, 1.1, 0);
+  const spanMaterials = TEAM.map(
+    (color) => new THREE.MeshStandardMaterial({ color, roughness: 0.8 }),
+  );
+  const ghostSpans = batch(
+    spanGeometry,
+    new THREE.MeshBasicMaterial({
+      color: 0x65747a,
+      transparent: true,
+      opacity: 0.35,
+      depthWrite: false,
+    }),
+    game.world.cells.length * 6,
+  );
+  const wallPreviewMaterial = new THREE.MeshBasicMaterial({
+    color: 0x6fffd0,
+    wireframe: true,
+    transparent: true,
+    opacity: 0.75,
+    depthWrite: false,
+  });
+  const wallPreviewPosts = batch(model("wall", 0), wallPreviewMaterial, 65);
+  const wallPreviewSpans = batch(spanGeometry, wallPreviewMaterial, 128);
+  const planWallSpans = batch(
+    spanGeometry,
+    new THREE.MeshBasicMaterial({
+      color: 0x6fffd0,
+      wireframe: true,
+      transparent: true,
+      opacity: 0.35,
+      depthWrite: false,
+    }),
+    game.world.cells.length * 6,
+  );
+  let ghostCount = 0,
+    wallSpanCount = 0;
+  const smoke = new SmokePool();
+  const smokeCanvas = document.createElement("canvas");
+  smokeCanvas.width = smokeCanvas.height = 64;
+  const smokeContext = smokeCanvas.getContext("2d")!;
+  const smokeGradient = smokeContext.createRadialGradient(
+    32,
+    32,
+    2,
+    32,
+    32,
+    31,
+  );
+  smokeGradient.addColorStop(0, "rgba(35,39,43,1)");
+  smokeGradient.addColorStop(0.45, "rgba(28,33,38,0.8)");
+  smokeGradient.addColorStop(1, "rgba(40,46,51,0)");
+  smokeContext.fillStyle = smokeGradient;
+  smokeContext.fillRect(0, 0, 64, 64);
+  const smokeTexture = new THREE.CanvasTexture(smokeCanvas);
+  smokeTexture.colorSpace = THREE.SRGBColorSpace;
+  const smokeGeometry = new THREE.PlaneGeometry(1, 1);
+  const smokeBatches = Array.from({ length: 8 }, (_, i) =>
+    batch(
+      smokeGeometry,
+      new THREE.MeshBasicMaterial({
+        map: smokeTexture,
+        transparent: true,
+        opacity: 0.8 * (1 - i / 8),
+        depthWrite: false,
+      }),
+      SMOKE_LIMIT,
+    ),
+  );
   const ringGeo = new THREE.RingGeometry(1, 1.12, 32);
   ringGeo.rotateX(-Math.PI / 2);
   const ringMat = new THREE.MeshBasicMaterial({
@@ -382,6 +485,27 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
       ? []
       : gatherBuildPlans(game, state.localTeam ?? 0);
     buildPlanCount = plans.length;
+    planWallSpans.count = 0;
+    const plannedWalls = plans
+      .filter((p) => p.kind === "wall")
+      .map((p, i) => ({
+        id: -i - 1,
+        team: state.localTeam ?? 0,
+        kind: "wall",
+        cell: p.cell,
+        position: game.world.cells[p.cell].position,
+        hp: 1,
+      }));
+    const knownWalls = [...game.entities.values()].filter(
+      (e) => e.kind === "wall" && e.team === (state.localTeam ?? 0),
+    );
+    for (const span of wallSpans(game.world, [...knownWalls, ...plannedWalls]))
+      if (span.owner < 0 && span.a !== span.b)
+        planWallSpans.setMatrixAt(
+          planWallSpans.count++,
+          spanMatrix(span.a, span.b),
+        );
+    uploadInstances(planWallSpans);
     for (const mesh of planBatches.values()) mesh.count = 0;
     for (const mesh of planRings) mesh.count = 0;
     for (const label of planLabels) label.visible = false;
@@ -473,7 +597,7 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
   }
   function setTransform(
     object: THREE.Object3D,
-    entity: Entity,
+    entity: Pick<Entity, "position" | "heading">,
     interpolate = 0,
   ) {
     position.fromArray(entity.position);
@@ -494,6 +618,129 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
         Math.max(object.position.length(), position.length()),
       );
     } else object.position.copy(position);
+  }
+  function spanMatrix(a: Vec3, b: Vec3, progress = 1) {
+    position.fromArray(a);
+    endpoint.fromArray(b);
+    dummy.position.copy(position).add(endpoint).multiplyScalar(0.5);
+    normal.copy(dummy.position).normalize();
+    forward.subVectors(endpoint, position).projectOnPlane(normal).normalize();
+    right.crossVectors(normal, forward).normalize();
+    dummy.quaternion.setFromRotationMatrix(
+      basis.makeBasis(right, normal, forward),
+    );
+    dummy.scale.set(1, 0.25 + 0.75 * progress, position.distanceTo(endpoint));
+    dummy.updateMatrix();
+    return dummy.matrix;
+  }
+  function updateBattlefieldEffects() {
+    const team = state.localTeam ?? 0;
+    const walls = [...game.entities.values()].filter(
+      (e) => e.kind === "wall" && e.hp > 0 && visibleEntity(e),
+    );
+    for (const mesh of wallBatches.values()) {
+      mesh.count = 0;
+      mesh.userData.entityIds.length = 0;
+    }
+    wallSpanCount = 0;
+    for (const span of wallSpans(game.world, walls)) {
+      if (span.a === span.b) continue;
+      const owner = game.entities.get(span.owner)!;
+      let mesh = wallBatches.get(owner.team);
+      if (!mesh) {
+        mesh = batch(
+          spanGeometry,
+          spanMaterials[owner.team],
+          game.world.cells.length * 6,
+        );
+        mesh.userData.entityIds = [];
+        wallBatches.set(owner.team, mesh);
+      }
+      mesh.setMatrixAt(
+        mesh.count++,
+        spanMatrix(span.a, span.b, owner.progress),
+      );
+      mesh.userData.entityIds.push(owner.id);
+      wallSpanCount++;
+    }
+    for (const mesh of wallBatches.values()) uploadInstances(mesh);
+    ghostCount = 0;
+    ghostSpans.count = 0;
+    for (const mesh of ghostBatches.values()) mesh.count = 0;
+    if (!state.overview)
+      for (const observation of state.rememberedBuildings?.values() ?? []) {
+        if (game.visible[team][observation.cell]) continue;
+        let mesh = ghostBatches.get(observation.kind + observation.team);
+        if (!mesh) {
+          mesh = batch(
+            model(observation.kind, observation.team),
+            ghostMaterial,
+            game.world.cells.length,
+          );
+          ghostBatches.set(observation.kind + observation.team, mesh);
+        }
+        setTransform(dummy, observation);
+        dummy.scale.setScalar(0.25 + 0.75 * observation.progress);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(mesh.count++, dummy.matrix);
+        ghostCount++;
+        for (const connection of observation.connections)
+          ghostSpans.setMatrixAt(
+            ghostSpans.count++,
+            spanMatrix(observation.position, connection, observation.progress),
+          );
+      }
+    for (const mesh of ghostBatches.values()) uploadInstances(mesh);
+    uploadInstances(ghostSpans);
+    wallPreviewPosts.count = wallPreviewSpans.count = 0;
+    if (!state.overview && state.building === "wall" && state.wallPreview) {
+      const preview = state.wallPreview;
+      wallPreviewMaterial.color.set(preview.valid ? 0x6fffd0 : 0xff5b59);
+      preview.cells.slice(0, 65).forEach((id, i) => {
+        const cell = game.world.cells[id];
+        dummy.position.fromArray(cell.position);
+        dummy.quaternion.setFromUnitVectors(UP, normal.fromArray(cell.dir));
+        dummy.scale.setScalar(1);
+        dummy.updateMatrix();
+        wallPreviewPosts.setMatrixAt(wallPreviewPosts.count++, dummy.matrix);
+        if (i)
+          wallPreviewSpans.setMatrixAt(
+            wallPreviewSpans.count++,
+            spanMatrix(
+              game.world.cells[preview.cells[i - 1]].position,
+              cell.position,
+            ),
+          );
+      });
+    }
+    uploadInstances(wallPreviewPosts);
+    uploadInstances(wallPreviewSpans);
+    smoke.update(game, team);
+    for (const mesh of smokeBatches) mesh.count = 0;
+    if (!state.overview)
+      for (const particle of smoke.particles) {
+        const fraction = particle.age / particle.lifetime;
+        dummy.position
+          .fromArray(particle.position)
+          .addScaledVector(
+            normal.fromArray(particle.normal),
+            particle.age * 2.3,
+          );
+        right
+          .set(
+            Math.sin(particle.seed * 2.4),
+            Math.cos(particle.seed * 1.7),
+            Math.sin(particle.seed),
+          )
+          .projectOnPlane(normal);
+        dummy.position.addScaledVector(right, particle.age * 0.4);
+        dummy.quaternion.copy(camera.quaternion);
+        dummy.scale.setScalar(0.7 + fraction * 2.3);
+        dummy.updateMatrix();
+        const mesh = smokeBatches[Math.min(7, Math.floor(fraction * 8))];
+        mesh.setMatrixAt(mesh.count++, dummy.matrix);
+      }
+    for (const mesh of smokeBatches) uploadInstances(mesh);
   }
   function visibleEntity(entity: Entity) {
     return (
@@ -590,6 +837,7 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
         mesh.setMatrixAt(mesh.count++, object.matrix);
       }
       for (const mesh of batches.values()) uploadInstances(mesh);
+      updateBattlefieldEffects();
       ringBatch.count = 0;
       barBatch.count = 0;
       const selected = state.overview
@@ -670,7 +918,11 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
       updateBuildPlans();
       preview.visible =
         !state.overview &&
-        Boolean(state.building && state.hoveredCell !== null);
+        Boolean(
+          state.building &&
+            state.building !== "wall" &&
+            state.hoveredCell !== null,
+        );
       if (preview.visible) {
         const cell = game.world.cells[state.hoveredCell!];
         preview.geometry = model(state.building!, state.localTeam ?? 0);
@@ -716,6 +968,19 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
         dummy.scale.setScalar(1.5);
         dummy.updateMatrix();
         const mesh = shotBatches[shot.team];
+        if (shot.heavy) {
+          right
+            .crossVectors(
+              normal,
+              endpoint.fromArray(shot.to).sub(position.fromArray(shot.from)),
+            )
+            .normalize();
+          dummy.position.addScaledVector(right, -0.44);
+          dummy.updateMatrix();
+          mesh.setMatrixAt(mesh.count++, dummy.matrix);
+          dummy.position.addScaledVector(right, 0.88);
+          dummy.updateMatrix();
+        }
         mesh.setMatrixAt(mesh.count++, dummy.matrix);
       }
       for (const explosion of game.explosions) {
@@ -750,7 +1015,9 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
       );
       const ground = raycaster.intersectObject(terrain, false)[0];
       const hits = raycaster.intersectObjects(
-        [...batches.values()].filter((mesh) => mesh.count > 0),
+        [...batches.values(), ...wallBatches.values()].filter(
+          (mesh) => mesh.count > 0,
+        ),
         false,
       );
       const hit = hits.find(
@@ -844,9 +1111,16 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
         drawCalls: renderer.info.render.calls,
         triangles: renderer.info.render.triangles,
         buildPlans: buildPlanCount,
+        ghosts: ghostCount,
+        smoke: smoke.particles.length,
+        wallSpans: wallSpanCount,
       };
     },
     dispose() {
+      smoke.clear();
+      smokeTexture.dispose();
+      ghostMaterial.dispose();
+      spanMaterials.forEach((m) => m.dispose());
       scene.traverse((object) => {
         const mesh = object as THREE.Mesh;
         if (mesh.geometry) mesh.geometry.dispose();

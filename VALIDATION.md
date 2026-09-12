@@ -2,6 +2,27 @@
 
 Validated on 12 September 2026.
 
+## Battlefield improvements
+
+Implemented remembered enemy buildings, draggable walls, viewport double-click selection, a distinctive twin-barrel Heavy Tank, critical-health smoke, three independent audio sliders, and removal of the mission/roster and planet information panels.
+
+- **63 automated tests pass.** New coverage includes deterministic connected wall lines; atomic placement validation and the 64-order limit; construction stalls, resumption, remaining-cost previews, and duplicate prevention; movement barriers and destroyed-wall route reopening; ordinary weapon obstruction, turret exemption, and terrain obstruction; wall breaching; and twin-barrel visuals producing one damage event. Real WebSocket tests verify wall command ownership, malformed-command rejection, and private construction queues.
+- Building-memory tests cover discovery, frozen hidden construction and wall connections, hidden destruction and elimination, visible replacement/removal, viewer changes, and fresh matches. Memories contain no private orders and never restore hidden entities to player snapshots.
+- Smoke tests cover the 35% threshold, unfinished units, fog, death, paused time, match resets, and the 2,048-particle cap. Audio tests verify independent UI/world/music channels, clamping, persistence, and migration of combined effects and old mute preferences.
+- TypeScript and the production build pass.
+- Solo browser acceptance passes the existing gameplay suite and the new pointer-driven checks: same-type double-click and Shift selection, offscreen/far-side exclusion, building and command-mode behavior, valid/invalid wall dragging, wall completion, Escape cancellation without changing selection, non-pickable enemy ghosts, rescouting, and clean resets. The three-slider mix survives reload; an old muted mix migrates to three zero volumes. No uncaught browser errors were reported.
+- Multiplayer browser acceptance passes with mixed human/AI and four-human rooms. A non-host player drags a wall line through the real client/server command path. Controlled authoritative snapshots verify that seen buildings become private ghosts, remain unchanged after hidden destruction, and disappear after rescouting. Three audio channels, live online menus, elimination, host transfer, rematches, disconnect takeover, and cleanup remain covered.
+
+### Visual and rendering checks
+
+Screenshots were inspected for the larger Heavy Tank silhouette beside regular tanks, dark damage smoke, connected completed walls, remembered enemy buildings, the five construction cards, and the simplified three-slider audio popup. Artifacts are generated under `test-results/`: `heavy-tank-and-smoke.png`, `wall-line-preview.png`, `walls-built.png`, `enemy-building-memory.png`, `audio-three-sliders.png`, `multiplayer-walls.png`, and `multiplayer-building-memory.png`.
+
+A browser fixture renders **400 critically damaged mobile units plus an existing wall line**, advancing effect time across 50 frames. Smoke reaches but never exceeds **2,048 particles**. Draw calls increase from **10 before emission to 15 at the final frame**; the final frame contains 1,648 smoke particles and 101,596 triangles. This checks bounded rendering resources, not simulation throughput or a hardware GPU FPS target.
+
+Reproduce with `npm test`, `npm run build`, `npm run test:browser`, and `npm run test:multiplayer`. Browser runs in this environment used the already installed Chromium at `/home/tony/.cache/ms-playwright/chromium-1181/chrome-linux/chrome` via `CHROMIUM_PATH`, with the suites' SwiftShader-compatible launch flags. Local WebSocket and browser tests ran outside the network-restricted sandbox. No dependencies were added and no deployment was performed.
+
+Walls currently have no gates and AI does not place them autonomously. Existing Heavy combat statistics remain unchanged. The following sections preserve earlier implementation and performance results.
+
 ## Targeted runtime optimization pass
 
 Implemented an exact spatial index for nearest-cell queries, active-range instance-matrix uploads, reusable rendering scratch objects, explicit detached snapshot copies, reusable client entity/fog storage, and persistent roster/production controls. Gameplay rules, graphics settings, dependencies, protocol fields, 20 Hz simulation, and 10 Hz snapshots are unchanged.

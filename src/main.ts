@@ -2,7 +2,9 @@ import "./style.css";
 import { createWorld } from "./world";
 import {
   createGame,
-  tick,
+  tick as simulationTick,
+  planWallLine,
+  issueWallLine,
   SPECS,
   issueOrder as simIssueOrder,
   stopUnits as simStopUnits,
@@ -28,6 +30,7 @@ import { NetworkClient } from "./network";
 import { createLobby } from "./lobby";
 import { resolveGameServer } from "./server-address";
 import { createAudio } from "./audio";
+import { BuildingMemory } from "./building-memory";
 import type { ClientMessage, LobbyRoom } from "./protocol";
 
 const icons: Record<string, string> = {
@@ -42,11 +45,12 @@ const icons: Record<string, string> = {
   scout: '<path d="m12 3 8 13-8-3-8 3ZM6 19h12M9 22h6"/>',
   tank: '<path d="M3 14h18v7H3zM7 14V8h10v6M12 8V2M6 18h12"/>',
   heavy:
-    '<path d="M8 2h8v6H8zM5 10h14v8H5zM2 10v8m20-8v8M7 18v4m10-4v4M9 13h6"/>',
+    '<path d="M2 12h4v10H2zM18 12h4v10h-4zM6 14h12v7H6zM8 8h8v7H8zM9 8V1m6 7V1"/>',
   extractor: '<path d="M4 21h16M6 21V9l6-6 6 6v12M8 9h8M12 9v7m-3-3 3 3 3-3"/>',
   generator:
     '<path d="M4 21V7l5-4v18m6 0V3l5 4v14M2 21h20M11 8h2m-2 5h2m-2 5h2"/>',
   factory: '<path d="M3 21V10l6 3V8l6 4V3h5v18ZM7 17v4m5-4v4m5-4v4"/>',
+  wall: '<path d="M2 5h4v16H2zM10 5h4v16h-4zM18 5h4v16h-4zM6 8h4m4 0h4M6 18h4m4 0h4"/>',
   turret: '<path d="M4 22h16l-3-8H7ZM8 14V8h8v6M12 8V2m-4 2h8"/>',
   move: '<path d="M12 3v18M3 12h18m-5-5 5 5-5 5M7 7l-4 5 4 5m5-14-5 5m5-5 5 5m-5 13-5-5m5 5 5-5"/>',
   attack:
@@ -77,8 +81,6 @@ app.innerHTML = `
   </div>
   <div class="top-actions"><div class="live"><i></i><span id="status-label">AWAITING DEPLOYMENT</span></div><span id="clock">00:00</span><button class="icon-button" id="sound" title="Enable sound" aria-label="Enable sound">${icon("sound")}</button><button class="icon-button" id="help" title="Controls" aria-label="Controls">${icon("help")}</button><button class="icon-button" id="pause" title="Pause · Esc" aria-label="Pause">${icon("pause")}</button></div>
  </header>
- <aside class="mission-panel game-ui"><div class="eyebrow"><i class="cyan-dot"></i> OPERATION 01</div><h2>Take the high ground.</h2><p>Expand your foothold.<br>Find and destroy the enemy commander.</p><div class="mission-rule"></div><div class="objective"><span class="objective-dot"></span><span>Rival commanders</span><span id="opponents-status" class="hostile-label">1 ACTIVE</span></div><div class="objective"><span class="objective-dot friendly"></span><span>Your commander</span><span id="commander-status">ONLINE</span></div><div id="match-roster" class="match-roster"></div></aside>
- <aside class="planet-panel game-ui"><div class="eyebrow">THEATER OF OPERATIONS</div><h3>KEPLER <span>— 09</span></h3><div class="planet-data"><span>CLASS</span><b>TERRESTRIAL</b><span>TOPOLOGY</span><b>SPHERICAL / NO BOUNDARY</b><span>SEED</span><b id="seed-label"></b></div><div class="signal"><i></i><i></i><i></i><i></i><i></i><span>SURFACE LINK ESTABLISHED</span></div></aside>
  <div class="view-label game-ui"><span class="bracket">┌</span><span>SURFACE COMMAND <b>LIVE</b></span><span class="bracket">┐</span></div>
  <div id="toast" role="status"></div>
  <div id="mode-hint" class="mode-hint" hidden></div>
@@ -97,7 +99,7 @@ const $ = <T extends HTMLElement = HTMLElement>(s: string) =>
   document.querySelector<T>(s)!;
 app.insertAdjacentHTML(
   "beforeend",
-  `<aside id="audio-panel" class="audio-controls" hidden><div class="eyebrow">AUDIO / ORIGINAL SCORE</div><label for="sfx-volume">Sound effects<input id="sfx-volume" type="range" min="0" max="100" aria-label="Sound effects volume"/></label><label for="music-volume">Music<input id="music-volume" type="range" min="0" max="100" aria-label="Music volume"/></label><button id="audio-mute" class="secondary-button">MUTE ALL</button><p>Three industrial war tracks and tactical effects. Your mix is saved on this device.</p></aside>`,
+  `<aside id="audio-panel" class="audio-controls" hidden><label for="ui-sfx-volume">UI SFX<input id="ui-sfx-volume" type="range" min="0" max="100" aria-label="UI SFX volume"/></label><label for="world-sfx-volume">World SFX<input id="world-sfx-volume" type="range" min="0" max="100" aria-label="World SFX volume"/></label><label for="music-volume">Music<input id="music-volume" type="range" min="0" max="100" aria-label="Music volume"/></label></aside>`,
 );
 let game!: Game;
 let scene!: SceneApi;
@@ -109,6 +111,11 @@ let networkUrl = "";
 let currentRoom: LobbyRoom | null = null;
 let connecting = false;
 const audio = createAudio();
+const buildingMemory = new BuildingMemory();
+function tick(next: Game, dt: number) {
+  simulationTick(next, dt);
+  buildingMemory.update(next, localTeam);
+}
 let state: RenderState = {
   selected: new Set(),
   hoveredCell: null,
@@ -118,14 +125,6 @@ let state: RenderState = {
 };
 let moveMode = false;
 let lastUi = "";
-const rosterRows = new Map<
-  number,
-  {
-    row: HTMLDivElement;
-    name: HTMLElement;
-    status: HTMLElement;
-  }
->();
 $("#production-line").innerHTML =
   '<div class="production-status" hidden><i></i><span></span><b></b><button data-cancel title="Cancel current production">×</button></div><div class="build-footnote" hidden><span class="gold-dot" hidden></span><span data-footnote></span></div>';
 const productionStatus = $("#production-line .production-status");
@@ -154,6 +153,7 @@ const buildings: BuildingKind[] = [
   "generator",
   "factory",
   "turret",
+  "wall",
 ];
 const units: UnitKind[] = ["constructor", "scout", "tank", "heavy"];
 
@@ -225,7 +225,7 @@ async function connectLobby(message: ClientMessage, address: string) {
             toast(`Room ${room.code} live. You command side ${team + 1}.`);
           },
           onSnapshot() {
-            /* The network client applies authoritative state in place. */
+            buildingMemory.update(game, localTeam);
           },
           onError(message) {
             lobby.status(message, true);
@@ -285,32 +285,34 @@ $("#multiplayer-open").addEventListener("click", () => {
     $<HTMLInputElement>("#seed-input").value.trim() || game.world.seed,
   );
 });
+const volumeControls = {
+  uiSfx: "ui-sfx-volume",
+  worldSfx: "world-sfx-volume",
+  music: "music-volume",
+} as const;
 function syncAudioUi() {
   const settings = audio.getSettings();
-  $<HTMLInputElement>("#sfx-volume").value = String(
-    Math.round(settings.sfx * 100),
+  for (const [key, id] of Object.entries(volumeControls))
+    $<HTMLInputElement>(`#${id}`).value = String(
+      Math.round(settings[key as keyof typeof settings] * 100),
+    );
+  $("#sound").classList.toggle(
+    "active",
+    Object.values(settings).some((v) => v > 0),
   );
-  $<HTMLInputElement>("#music-volume").value = String(
-    Math.round(settings.music * 100),
-  );
-  $("#audio-mute").textContent = settings.muted ? "UNMUTE ALL" : "MUTE ALL";
-  $("#sound").classList.toggle("active", !settings.muted);
-  $("#sound").title = "Sound and music settings";
-  $("#sound").setAttribute("aria-label", "Sound and music settings");
+  $("#sound").title = "Audio volume settings";
+  $("#sound").setAttribute("aria-label", "Audio volume settings");
 }
-for (const id of ["sfx-volume", "music-volume"])
+for (const id of Object.values(volumeControls))
   $(`#${id}`).addEventListener("input", () => {
     void audio.unlock();
-    audio.setVolumes(
-      Number($<HTMLInputElement>("#sfx-volume").value) / 100,
-      Number($<HTMLInputElement>("#music-volume").value) / 100,
-    );
+    audio.setVolumes({
+      uiSfx: Number($<HTMLInputElement>("#ui-sfx-volume").value) / 100,
+      worldSfx: Number($<HTMLInputElement>("#world-sfx-volume").value) / 100,
+      music: Number($<HTMLInputElement>("#music-volume").value) / 100,
+    });
+    syncAudioUi();
   });
-$("#audio-mute").addEventListener("click", () => {
-  void audio.unlock();
-  audio.setMuted(!audio.getSettings().muted);
-  syncAudioUi();
-});
 document.addEventListener("pointerdown", (event) => {
   if (!(event.target as HTMLElement).closest("#sound, #audio-panel"))
     $("#audio-panel").hidden = true;
@@ -323,6 +325,8 @@ function installGame(next: Game, team: Team, overview: boolean) {
   scene?.dispose();
   game = next;
   localTeam = team;
+  buildingMemory.clear();
+  buildingMemory.update(game, team);
   game.paused = overview;
   scene = createScene($("#viewport"), game);
   state = {
@@ -332,17 +336,15 @@ function installGame(next: Game, team: Team, overview: boolean) {
     attackMode: false,
     overview,
     localTeam,
+    rememberedBuildings: buildingMemory.buildings,
   };
   const commander = [...game.entities.values()].find(
     (e) => e.team === localTeam && e.kind === "commander",
   );
   if (commander) state.selected.add(commander.id);
-  $("#seed-label").textContent = game.world.seed;
   groups.clear();
   keys.clear();
   lastUi = "";
-  rosterRows.clear();
-  $("#match-roster").replaceChildren();
   lastProductionProgress = -1;
   lastMessage = "";
   seenElimination = false;
@@ -432,13 +434,16 @@ function toast(message: string) {
 }
 function clearMode() {
   state.building = null;
+  state.wallPreview = null;
   state.attackMode = false;
   moveMode = false;
   updateMode();
 }
 function updateMode() {
   const message = state.building
-    ? `PLACE ${SPECS[state.building].name.toUpperCase()} · CLICK SURFACE · ESC TO CANCEL`
+    ? state.building === "wall"
+      ? "WALL LINE · DRAG SURFACE · SHIFT TO QUEUE · ESC TO CANCEL"
+      : `PLACE ${SPECS[state.building].name.toUpperCase()} · CLICK SURFACE · ESC TO CANCEL`
     : state.attackMode
       ? "ATTACK MOVE · CLICK DESTINATION · ESC TO CANCEL"
       : moveMode
@@ -539,6 +544,23 @@ function executeAt(x: number, y: number, append: boolean) {
 
 function attachPointer() {
   const canvas = scene.canvas;
+  let wallStart: number | null = null;
+  let lastClick: { id: number; time: number; x: number; y: number } | null =
+    null;
+  const previewWall = (end: number | null, append: boolean) => {
+    const builder = selectedEntities().find(
+      (e) => e.kind === "commander" || e.kind === "constructor",
+    );
+    if (!builder || end === null) {
+      state.wallPreview = null;
+      return;
+    }
+    const plan = planWallLine(game, builder.id, wallStart ?? end, end, append);
+    state.wallPreview = plan;
+    $("#mode-hint").textContent = plan.valid
+      ? `WALL LINE · ${plan.cells.length} SEGMENTS · ${plan.metal} METAL / ${plan.energy} ENERGY · RELEASE TO BUILD`
+      : `WALL LINE · ${plan.reason.toUpperCase()}`;
+  };
   let pointer: {
     x: number;
     y: number;
@@ -546,6 +568,7 @@ function attachPointer() {
     lastY: number;
     button: number;
     moved: boolean;
+    wall: boolean;
   } | null = null;
   canvas.addEventListener("contextmenu", (e) => e.preventDefault());
   canvas.addEventListener("pointerdown", (e) => {
@@ -557,12 +580,19 @@ function attachPointer() {
       lastY: e.clientY,
       button: e.button,
       moved: false,
+      wall: state.building === "wall",
     };
+    if (e.button === 0 && state.building === "wall" && controllable()) {
+      wallStart = scene.pick(e.clientX, e.clientY).cell;
+      previewWall(wallStart, e.shiftKey);
+    }
     canvas.setPointerCapture(e.pointerId);
   });
   canvas.addEventListener("pointermove", (e) => {
     if (controllable())
       state.hoveredCell = scene.pick(e.clientX, e.clientY).cell;
+    if (state.building === "wall") previewWall(state.hoveredCell, e.shiftKey);
+    else wallStart = null;
     if (!pointer) return;
     const dx = e.clientX - pointer.lastX,
       dy = e.clientY - pointer.lastY;
@@ -572,6 +602,7 @@ function attachPointer() {
       scene.orbit(dx, dy);
     else if (
       pointer.button === 0 &&
+      !pointer.wall &&
       pointer.moved &&
       !state.building &&
       !state.attackMode &&
@@ -595,36 +626,103 @@ function attachPointer() {
     pointer = null;
     $("#selection-box").style.display = "none";
     if (!controllable()) return;
+    if (p.moved || p.button !== 0) lastClick = null;
+    if (p.wall && state.building !== "wall") return;
     if (p.button === 0) {
-      if (state.building || state.attackMode || moveMode)
+      if (state.building === "wall") {
+        lastClick = null;
+        const end = scene.pick(e.clientX, e.clientY).cell;
+        const builder = selectedEntities().find(
+          (unit) => unit.kind === "commander" || unit.kind === "constructor",
+        );
+        if (builder && wallStart !== null && end !== null) {
+          const plan = planWallLine(
+            game,
+            builder.id,
+            wallStart,
+            end,
+            e.shiftKey,
+          );
+          if (plan.valid) {
+            if (multiplayer)
+              network?.send({
+                type: "command",
+                command: {
+                  type: "wallLine",
+                  builderId: builder.id,
+                  startCell: wallStart,
+                  endCell: end,
+                  append: e.shiftKey,
+                },
+              });
+            else issueWallLine(game, builder.id, wallStart, end, e.shiftKey);
+            toast(
+              `Wall line ordered · ${plan.metal} metal / ${plan.energy} energy`,
+            );
+            audio.cue("build");
+            if (!e.shiftKey) clearMode();
+          } else {
+            toast(plan.reason);
+            audio.cue("error");
+          }
+        }
+        wallStart = null;
+        state.wallPreview = null;
+        return;
+      }
+      if (state.building || state.attackMode || moveMode) {
+        lastClick = null;
         executeAt(e.clientX, e.clientY, e.shiftKey);
-      else {
+      } else {
         if (!e.shiftKey) state.selected.clear();
-        if (p.moved)
+        if (p.moved) {
+          lastClick = null;
           scene
             .selectRect(p.x, p.y, e.clientX, e.clientY)
             .forEach((id) => state.selected.add(id));
-        else {
+        } else {
           const hit = scene.pick(e.clientX, e.clientY);
-          if (
-            hit.entity !== null &&
-            game.entities.get(hit.entity)?.team === localTeam
-          ) {
-            if (e.shiftKey && state.selected.has(hit.entity))
-              state.selected.delete(hit.entity);
-            else state.selected.add(hit.entity);
-          }
+          const unit =
+            hit.entity === null ? undefined : game.entities.get(hit.entity);
+          const now = performance.now();
+          if (unit?.team === localTeam) {
+            if (
+              !SPECS[unit.kind].building &&
+              lastClick?.id === unit.id &&
+              now - lastClick.time <= 300 &&
+              Math.hypot(e.clientX - lastClick.x, e.clientY - lastClick.y) <= 5
+            ) {
+              const rect = canvas.getBoundingClientRect();
+              scene
+                .selectRect(rect.left, rect.top, rect.right, rect.bottom)
+                .filter((id) => game.entities.get(id)?.kind === unit.kind)
+                .forEach((id) => state.selected.add(id));
+              lastClick = null;
+            } else {
+              if (e.shiftKey && state.selected.has(unit.id))
+                state.selected.delete(unit.id);
+              else state.selected.add(unit.id);
+              lastClick = SPECS[unit.kind].building
+                ? null
+                : { id: unit.id, time: now, x: e.clientX, y: e.clientY };
+            }
+          } else lastClick = null;
         }
         lastUi = "";
         beep(340);
       }
     } else if (p.button === 2 && !p.moved) {
+      lastClick = null;
+      wallStart = null;
       if (state.building) clearMode();
       else executeAt(e.clientX, e.clientY, e.shiftKey);
     }
   });
   canvas.addEventListener("pointercancel", () => {
     pointer = null;
+    wallStart = null;
+    lastClick = null;
+    state.wallPreview = null;
     $("#selection-box").style.display = "none";
   });
   canvas.addEventListener(
@@ -741,7 +839,7 @@ function showModal(type: "pause" | "help" | "end" | "eliminated") {
             : "Operation paused.";
   if (type === "help")
     $("#modal-content").innerHTML =
-      `<div class="controls-list"><div><span>Select / box select</span><kbd>LEFT CLICK / DRAG</kbd></div><div><span>Move / attack / rally</span><kbd>RIGHT CLICK</kbd></div><div><span>Rotate planet</span><kbd>WASD / MIDDLE DRAG</kbd></div><div><span>Zoom</span><kbd>SCROLL</kbd></div><div><span>Queue orders / add selection</span><kbd>SHIFT</kbd></div><div><span>Attack move / move / stop</span><kbd>F / M / X</kbd></div><div><span>Construction shortcuts</span><kbd>Q / E / R / T</kbd></div><div><span>Assign / select group</span><kbd>CTRL + 1–9 / 1–9</kbd></div><div><span>Focus commander / pause</span><kbd>HOME / ESC</kbd></div></div><p class="modal-description">Your commander builds and fights. Place extractors on gold deposits, generators for energy, and a factory to field an army. Both resources stream into construction. Right click an unfinished structure with a builder to resume it. Scout the dark terrain and keep your commander alive.</p>`;
+      `<div class="controls-list"><div><span>Select / box select</span><kbd>LEFT CLICK / DRAG</kbd></div><div><span>Select same type in view</span><kbd>DOUBLE CLICK</kbd></div><div><span>Build wall line</span><kbd>Y + LEFT DRAG</kbd></div><div><span>Move / attack / rally</span><kbd>RIGHT CLICK</kbd></div><div><span>Rotate planet</span><kbd>WASD / MIDDLE DRAG</kbd></div><div><span>Zoom</span><kbd>SCROLL</kbd></div><div><span>Queue orders / add selection</span><kbd>SHIFT</kbd></div><div><span>Attack move / move / stop</span><kbd>F / M / X</kbd></div><div><span>Construction shortcuts</span><kbd>Q / E / R / T / Y</kbd></div><div><span>Assign / select group</span><kbd>CTRL + 1–9 / 1–9</kbd></div><div><span>Focus commander / pause</span><kbd>HOME / ESC</kbd></div></div><p class="modal-description">Your commander builds and fights. Place extractors on gold deposits, generators for energy, and a factory to field an army. Both resources stream into construction. Right click an unfinished structure with a builder to resume it. Scout the dark terrain and keep your commander alive.</p>`;
   else
     $("#modal-content").innerHTML =
       `<p class="modal-description">${type === "end" ? (game.winner === null ? "No commander survived the final exchange. The operation ends in a draw." : game.winner === localTeam ? "All rival commanders have been eliminated. You control this world." : "Another commander controls this world. Regroup and prepare for your next deployment.") : type === "eliminated" ? "Your forces have been eliminated. The other commanders are still fighting. You can follow the remaining operation from your explored terrain or leave." : multiplayer ? "This is a live multiplayer battle. Your forces keep fighting while this menu is open. Leaving hands your surviving forces to AI." : "Your forces are holding position. Resume when you’re ready to command."}</p><div class="match-stats"><div><span>OPERATION TIME</span><b>${formatTime(game.time)}</b></div><div><span>FORCES REMAINING</span><b>${[...game.entities.values()].filter((e) => e.team === localTeam && !SPECS[e.kind].building).length}</b></div></div>`;
@@ -864,8 +962,8 @@ window.addEventListener("keydown", (e) => {
   if (e.code === "KeyM") action("move");
   if (e.code === "KeyF") action("attack");
   if (e.code === "KeyX") action("stop");
-  if (["KeyQ", "KeyE", "KeyR", "KeyT"].includes(e.code)) {
-    const index = ["KeyQ", "KeyE", "KeyR", "KeyT"].indexOf(e.code);
+  if (["KeyQ", "KeyE", "KeyR", "KeyT", "KeyY"].includes(e.code)) {
+    const index = ["KeyQ", "KeyE", "KeyR", "KeyT", "KeyY"].indexOf(e.code);
     const button =
       $("#build-options").querySelectorAll<HTMLButtonElement>("button")[index];
     button?.click();
@@ -920,54 +1018,12 @@ function updateUi() {
     .filter((e) => !SPECS[e.kind].building)
     .length.toString()
     .padStart(2, "0");
-  const activeRivals = game.players.filter(
-    (p, team) =>
-      team !== localTeam && p.controller !== "closed" && !p.eliminated,
-  ).length;
-  $("#opponents-status").textContent = `${activeRivals} ACTIVE`;
   $(".team-badge").childNodes.forEach((node) => {
     if (node.nodeType === Node.TEXT_NODE)
       node.textContent = ` ${multiplayer ? "SIDE " + (localTeam + 1) : "VANGUARD"} `;
   });
   $(".team-badge span").textContent =
     `${String(localTeam + 1).padStart(2, "0")} / YOU`;
-  const roster = $("#match-roster");
-  roster.hidden = !multiplayer;
-  if (multiplayer) {
-    const colors = ["#65e3db", "#ff7965", "#e9bb67", "#b998f5"];
-    game.players.forEach((player, team) => {
-      if (player.controller === "closed") return;
-      let entry = rosterRows.get(team);
-      if (!entry) {
-        const row = document.createElement("div");
-        const dot = document.createElement("i");
-        dot.style.background = colors[team];
-        const name = document.createElement("strong");
-        const status = document.createElement("span");
-        row.append(dot, name, status);
-        roster.appendChild(row);
-        entry = { row, name, status };
-        rosterRows.set(team, entry);
-      }
-      if (entry.row.classList.contains("eliminated") !== player.eliminated)
-        entry.row.classList.toggle("eliminated", player.eliminated);
-      setText(entry.name, player.name);
-      setText(
-        entry.status,
-        player.eliminated
-          ? "OUT"
-          : team === localTeam
-            ? "YOU"
-            : player.controller.toUpperCase(),
-      );
-    });
-  }
-  const commander = friendlies.find((e) => e.kind === "commander");
-  $("#commander-status").textContent = commander
-    ? commander.hp < SPECS.commander.hp * 0.35
-      ? "CRITICAL"
-      : "ONLINE"
-    : "LOST";
   for (const id of state.selected)
     if (!game.entities.has(id)) state.selected.delete(id);
   const selected = selectedEntities(),
@@ -1029,7 +1085,7 @@ function updateUi() {
       ? list
           .map((kind, i) => {
             const spec = SPECS[kind];
-            return `<button class="build-card ${state.building === kind ? "chosen" : ""}" data-kind="${kind}" title="${spec.role}. ${spec.buildTime}s build time." ${factory && factory.progress < 1 ? "disabled" : ""}><kbd>${["Q", "E", "R", "T"][i]}</kbd><span class="building-icon">${icon(kind)}</span><strong>${spec.name}</strong><span class="build-cost"><span>${icon("metal")}${spec.metal}</span><span>${icon("energy")}${spec.energy}</span></span></button>`;
+            return `<button class="build-card ${state.building === kind ? "chosen" : ""}" data-kind="${kind}" title="${spec.role}. ${spec.buildTime}s build time." ${factory && factory.progress < 1 ? "disabled" : ""}><kbd>${["Q", "E", "R", "T", "Y"][i]}</kbd><span class="building-icon">${icon(kind)}</span><strong>${spec.name}</strong><span class="build-cost"><span>${icon("metal")}${spec.metal}</span><span>${icon("energy")}${spec.energy}</span></span></button>`;
           })
           .join("")
       : `<div class="idle-message">${icon("orbit")}<div><strong>${first ? "Ready for your command." : "The world is yours to command."}</strong><p>${first ? "Right click to move. Attack move to engage along a route." : "Select your commander to build your first base."}</p></div></div>`;

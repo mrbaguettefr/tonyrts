@@ -14,7 +14,9 @@ export function gatherBuildPlans(game: Game, team: Team): BuildPlan[] {
   for (const entity of game.entities.values())
     if (
       (entity.team === team || game.visible[team]?.[entity.cell]) &&
-      ["extractor", "generator", "factory", "turret"].includes(entity.kind)
+      ["extractor", "generator", "factory", "turret", "wall"].includes(
+        entity.kind,
+      )
     )
       occupied.add(entity.cell);
   const plans = new Map<string, BuildPlan>();

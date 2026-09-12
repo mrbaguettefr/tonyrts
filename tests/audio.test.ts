@@ -126,9 +126,9 @@ test("gesture unlock, fog-safe events, bounded voices, mute persistence and disp
     ] as const)
       engine.cue(cue);
     assert.ok(engine.diagnostics().activeVoices <= 24);
-    engine.setVolumes(2, -0.5);
-    engine.setMuted(true);
-    assert.deepEqual(engine.getSettings(), { sfx: 1, music: 0, muted: true });
+    engine.setVolumes({ uiSfx: 2, worldSfx: -0.5, music: -0.5 });
+    assert.deepEqual(engine.getSettings(), { uiSfx: 1, worldSfx: 0, music: 0 });
+    engine.setVolumes({ uiSfx: 0, worldSfx: 0, music: 0 });
     const persisted = createAudio();
     assert.deepEqual(persisted.getSettings(), engine.getSettings());
     persisted.dispose();
@@ -149,12 +149,13 @@ test("gesture unlock, fog-safe events, bounded voices, mute persistence and disp
   }
 });
 
-
 test("three distinct arranged scores have finite, bounded notes", () => {
   assert.equal(MUSIC_TRACKS.length, 3);
   const signatures = new Set<string>();
   for (let track = 0; track < MUSIC_TRACKS.length; track++) {
-    const score = Array.from({ length: TRACK_STEPS }, (_, step) => musicStep(track, step));
+    const score = Array.from({ length: TRACK_STEPS }, (_, step) =>
+      musicStep(track, step),
+    );
     signatures.add(JSON.stringify(score));
     for (const notes of score) {
       assert.ok(notes.length <= 14);
@@ -164,8 +165,14 @@ test("three distinct arranged scores have finite, bounded notes", () => {
         assert.ok(note.amplitude > 0 && note.amplitude <= 0.32);
       }
     }
-    const count = (from: number, to: number) => score.slice(from * 16, to * 16).reduce((sum, notes) => sum + notes.length, 0);
-    assert.ok(count(24, 32) > count(40, 48), "assault is denser than breakdown");
+    const count = (from: number, to: number) =>
+      score
+        .slice(from * 16, to * 16)
+        .reduce((sum, notes) => sum + notes.length, 0);
+    assert.ok(
+      count(24, 32) > count(40, 48),
+      "assault is denser than breakdown",
+    );
   }
   assert.equal(signatures.size, 3);
 });
@@ -178,8 +185,14 @@ test("random first track, sequential transitions, wraparound and no reroll on un
       context = this;
     }
   }
-  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "AudioContext");
-  Object.defineProperty(globalThis, "AudioContext", { configurable: true, value: ClockContext });
+  const descriptor = Object.getOwnPropertyDescriptor(
+    globalThis,
+    "AudioContext",
+  );
+  Object.defineProperty(globalThis, "AudioContext", {
+    configurable: true,
+    value: ClockContext,
+  });
   let schedule: () => void = () => {};
   t.mock.method(globalThis, "setInterval", (callback: () => void) => {
     schedule = callback;
@@ -193,7 +206,10 @@ test("random first track, sequential transitions, wraparound and no reroll on un
       try {
         assert.equal(engine.diagnostics().musicTrack, null);
         await engine.unlock();
-        assert.equal(engine.diagnostics().musicTrack, MUSIC_TRACKS[first]!.title);
+        assert.equal(
+          engine.diagnostics().musicTrack,
+          MUSIC_TRACKS[first]!.title,
+        );
         engine.reset();
         await engine.unlock();
         assert.equal(random.mock.callCount(), 1);
@@ -207,7 +223,10 @@ test("random first track, sequential transitions, wraparound and no reroll on un
             schedule();
           }
           elapsed += TRACK_STEPS * step;
-          assert.equal(engine.diagnostics().musicTrack, MUSIC_TRACKS[(index + 1) % 3]!.title);
+          assert.equal(
+            engine.diagnostics().musicTrack,
+            MUSIC_TRACKS[(index + 1) % 3]!.title,
+          );
         }
       } finally {
         engine.dispose();
@@ -215,7 +234,110 @@ test("random first track, sequential transitions, wraparound and no reroll on un
       }
     }
   } finally {
-    if (descriptor) Object.defineProperty(globalThis, "AudioContext", descriptor);
+    if (descriptor)
+      Object.defineProperty(globalThis, "AudioContext", descriptor);
     else Reflect.deleteProperty(globalThis, "AudioContext");
   }
+});
+
+test("three audio channels are independent and legacy preferences migrate", async (t) => {
+  const contextDescriptor = Object.getOwnPropertyDescriptor(
+    globalThis,
+    "AudioContext",
+  );
+  const storageDescriptor = Object.getOwnPropertyDescriptor(
+    globalThis,
+    "localStorage",
+  );
+  let saved = JSON.stringify({ sfx: 0.42, music: 0.18, muted: false });
+  Object.defineProperty(globalThis, "AudioContext", {
+    configurable: true,
+    value: Context,
+  });
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: () => saved,
+      setItem: (_key: string, value: string) => {
+        saved = value;
+      },
+    },
+  });
+  t.after(() => {
+    if (contextDescriptor)
+      Object.defineProperty(globalThis, "AudioContext", contextDescriptor);
+    else Reflect.deleteProperty(globalThis, "AudioContext");
+    if (storageDescriptor)
+      Object.defineProperty(globalThis, "localStorage", storageDescriptor);
+    else Reflect.deleteProperty(globalThis, "localStorage");
+  });
+  const legacy = createAudio();
+  assert.deepEqual(legacy.getSettings(), {
+    uiSfx: 0.42,
+    worldSfx: 0.42,
+    music: 0.18,
+  });
+  legacy.dispose();
+  saved = JSON.stringify({ sfx: 0.7, music: 0.4, muted: true });
+  const muted = createAudio();
+  assert.deepEqual(muted.getSettings(), { uiSfx: 0, worldSfx: 0, music: 0 });
+  muted.dispose();
+  saved = "{}";
+  const audio = createAudio();
+  t.after(() => audio.dispose());
+  assert.deepEqual(audio.getSettings(), {
+    uiSfx: 0.65,
+    worldSfx: 0.65,
+    music: 0.24,
+  });
+  audio.setVolumes({ uiSfx: 0, worldSfx: 1, music: 0 });
+  await audio.unlock();
+  audio.cue("select");
+  assert.equal(audio.diagnostics().activeVoices, 0);
+  const game = createGame(createWorld("channels")),
+    options = { running: true, menuOpen: false };
+  audio.update(game, 0, options);
+  game.explosions = [
+    {
+      id: 200,
+      position: [...game.world.cells[game.world.spawns[0]].position],
+      age: 0,
+      duration: 1,
+      size: 1,
+    },
+  ];
+  audio.update(game, 0, options);
+  assert.equal(
+    audio.diagnostics().activeVoices,
+    2,
+    "world sounds survive UI mute",
+  );
+  audio.setVolumes({ uiSfx: 0.4, worldSfx: 0, music: 0 });
+  audio.cue("move");
+  assert.equal(
+    audio.diagnostics().activeVoices,
+    4,
+    "UI sounds survive world mute",
+  );
+  game.shots = [
+    {
+      id: 201,
+      team: 0,
+      from: [...game.world.cells[game.world.spawns[0]].position],
+      to: [...game.world.cells[game.world.spawns[0]].position],
+      age: 0,
+      duration: 1,
+    },
+  ];
+  audio.update(game, 0, options);
+  assert.equal(audio.diagnostics().activeVoices, 4);
+  audio.setVolumes({ uiSfx: 0, worldSfx: 0, music: 0.6 });
+  assert.equal(
+    audio.diagnostics().musicPlaying,
+    true,
+    "music is independent of both effects channels",
+  );
+  assert.deepEqual(JSON.parse(saved), { uiSfx: 0, worldSfx: 0, music: 0.6 });
+  audio.setVolumes({ uiSfx: NaN, worldSfx: Infinity, music: -1 });
+  assert.deepEqual(audio.getSettings(), { uiSfx: 0, worldSfx: 0, music: 0 });
 });

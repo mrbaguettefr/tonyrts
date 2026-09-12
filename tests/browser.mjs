@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { runBattlefieldChecks } from "./battlefield-browser.mjs";
 import { mkdir } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { chromium } from "playwright";
@@ -72,7 +73,7 @@ try {
   await page.click("#deploy");
   await page.waitForFunction(() => window.__IRON_ORBIT__.game.time > 0.2);
   assert.equal(await page.locator("#launch").isVisible(), false);
-  assert.equal(await page.locator(".build-card").count(), 4);
+  assert.equal(await page.locator(".build-card").count(), 5);
 
   // Pointer-driven movement, with camera keys preserving the order.
   const moveTarget = await page.evaluate(() => {
@@ -534,6 +535,7 @@ try {
   console.log(
     "Verified instance-buffer growth, shrinkage, empty batches and construction-plan reuse.",
   );
+  await runBattlefieldChecks(page);
   assert.deepEqual(errors, [], "No browser runtime errors");
 } finally {
   await browser?.close();

@@ -259,9 +259,6 @@
   padding: 18px;
   backdrop-filter: blur(14px);
 }
-.audio-controls .eyebrow {
-  margin-bottom: 17px;
-}
 .audio-controls label {
   display: flex;
   justify-content: space-between;
@@ -275,14 +272,6 @@
   width: 105px;
   accent-color: var(--cyan);
 }
-.audio-controls button {
-  font-size: 8px;
-}
-.audio-controls p {
-  color: #74949e;
-  font-size: 9px;
-  line-height: 1.6;
-}
 .online-badge {
   color: var(--cyan) !important;
 }
@@ -291,39 +280,6 @@
   font-size: 11px;
   line-height: 1.6;
   margin-bottom: 18px;
-}
-.match-roster {
-  margin-top: 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 9px;
-}
-.match-roster > div {
-  display: flex;
-  gap: 7px;
-  align-items: center;
-  font-size: 9px;
-  color: #9cb5bb;
-}
-.match-roster i {
-  height: 5px;
-  width: 5px;
-}
-.match-roster strong {
-  flex: 1;
-  font-weight: 400;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.match-roster span {
-  font-family: var(--mono);
-  font-size: 7px;
-  color: #7b989f;
-}
-.match-roster .eliminated {
-  opacity: 0.45;
-  text-decoration: line-through;
 }
 @media (max-height: 820px) {
   .lobby-card {

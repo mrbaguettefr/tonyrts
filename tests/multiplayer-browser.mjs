@@ -115,19 +115,9 @@ try {
     true,
     "Guest commander initially selected",
   );
-  await guest.waitForSelector("#match-roster strong");
-  await guest.evaluate(() => {
-    window.__rosterRows = [...document.querySelector("#match-roster").children];
-  });
-  await guest.waitForTimeout(400);
   assert.equal(
-    await guest.evaluate(() =>
-      [...document.querySelector("#match-roster").children].every(
-        (row, i) => row === window.__rosterRows[i],
-      ),
-    ),
-    true,
-    "Snapshot and HUD updates retain existing roster rows",
+    await guest.locator(".mission-panel, .planet-panel, #match-roster").count(),
+    0,
   );
 
   // A non-host human issues a real pointer movement command, applied by the server.
@@ -235,14 +225,151 @@ try {
   console.log(
     "Verified mixed room, guest authority, persistent construction plans.",
   );
-  // Music is gesture-unlocked; separate volumes and master mute persist.
+  const wallLine = await guest.evaluate(async () => {
+    const { planWallLine } = await import("/src/simulation.ts");
+    const { game, scene, localTeam } = window.__IRON_ORBIT__;
+    const builder = [...game.entities.values()].find(
+      (e) => e.team === localTeam && e.kind === "commander",
+    );
+    const cells = game.world.cells.filter((c) => {
+      const p = scene.project(c.id);
+      return (
+        game.visible[localTeam][c.id] &&
+        p.visible &&
+        p.x > 300 &&
+        p.x < 970 &&
+        p.y > 160 &&
+        p.y < 555
+      );
+    });
+    for (const a of cells)
+      for (const b of cells) {
+        const plan = planWallLine(game, builder.id, a.id, b.id);
+        if (plan.valid && plan.cells.length === 3)
+          return {
+            start: scene.project(a.id),
+            end: scene.project(b.id),
+            cells: plan.cells,
+          };
+      }
+    throw new Error("No multiplayer wall line fixture");
+  });
+  await guest.keyboard.press("y");
+  await guest.mouse.move(wallLine.start.x, wallLine.start.y);
+  await guest.mouse.down();
+  await guest.mouse.move(wallLine.end.x, wallLine.end.y, { steps: 6 });
+  await guest.mouse.up();
+  await waitFor(
+    guest,
+    (cells) => {
+      const { game, localTeam } = window.__IRON_ORBIT__;
+      const builder = [...game.entities.values()].find(
+        (e) => e.team === localTeam && e.kind === "commander",
+      );
+      return cells.every(
+        (cell) =>
+          builder.orders.some(
+            (o) => o.type === "build" && o.kind === "wall" && o.cell === cell,
+          ) ||
+          [...game.entities.values()].some(
+            (e) => e.kind === "wall" && e.cell === cell,
+          ),
+      );
+    },
+    wallLine.cells,
+  );
+  assert.ok(
+    server
+      .inspectRoom(code)
+      .game.entities.get(guestId)
+      .orders.some((o) => o.type === "build" && o.kind === "wall"),
+  );
+  await guest.screenshot({ path: "test-results/multiplayer-walls.png" });
+  await guest.keyboard.press("x");
+
+  // Freeze authority briefly to control visible/hidden snapshots independently of sight ticks.
+  const authoritative = server.inspectRoom(code).game;
+  authoritative.paused = true;
+  const oldVision = authoritative.visible[1].slice();
+  const ghostCell = await guest.evaluate(() => {
+    const { game, scene, localTeam } = window.__IRON_ORBIT__;
+    const commander = [...game.entities.values()].find(
+      (e) => e.team === localTeam && e.kind === "commander",
+    );
+    return game.world.cells.find((c) => {
+      const p = scene.project(c.id);
+      return (
+        c.passable &&
+        p.visible &&
+        p.x > 330 &&
+        p.x < 950 &&
+        p.y > 180 &&
+        p.y < 520 &&
+        game.world.distance(c.id, commander.cell) > 9
+      );
+    }).id;
+  });
+  const remembered = {
+    ...hostCommander,
+    id: 92001,
+    kind: "factory",
+    cell: ghostCell,
+    position: [...authoritative.world.cells[ghostCell].position],
+    hp: 1500,
+    progress: 0.4,
+    orders: [],
+    path: [],
+    queue: [],
+  };
+  authoritative.entities.set(remembered.id, remembered);
+  authoritative.visible[1][ghostCell] = 1;
+  authoritative.explored[1][ghostCell] = 1;
+  await waitFor(
+    guest,
+    (id) => window.__IRON_ORBIT__.state.rememberedBuildings.has(id),
+    remembered.id,
+  );
+  authoritative.visible[1][ghostCell] = 0;
+  await waitFor(
+    guest,
+    (id) =>
+      !window.__IRON_ORBIT__.game.entities.has(id) &&
+      window.__IRON_ORBIT__.state.rememberedBuildings.has(id),
+    remembered.id,
+  );
+  remembered.progress = 1;
+  authoritative.entities.delete(remembered.id);
+  await guest.waitForTimeout(250);
+  assert.equal(
+    await guest.evaluate(
+      (id) => window.__IRON_ORBIT__.state.rememberedBuildings.get(id).progress,
+      remembered.id,
+    ),
+    0.4,
+  );
+  await guest.screenshot({
+    path: "test-results/multiplayer-building-memory.png",
+  });
+  authoritative.visible[1][ghostCell] = 1;
+  await waitFor(
+    guest,
+    (id) => !window.__IRON_ORBIT__.state.rememberedBuildings.has(id),
+    remembered.id,
+  );
+  authoritative.visible[1].set(oldVision);
+  authoritative.paused = false;
+  console.log(
+    "Verified authoritative wall dragging and visibility-filtered building memory.",
+  );
+
+  // Music is gesture-unlocked; three independent volume settings persist.
   await guest.click("#sound");
   await guest.waitForSelector("#audio-panel");
   await guest.locator("#music-volume").evaluate((el) => {
     el.value = "37";
     el.dispatchEvent(new Event("input", { bubbles: true }));
   });
-  await guest.locator("#sfx-volume").evaluate((el) => {
+  await guest.locator("#ui-sfx-volume").evaluate((el) => {
     el.value = "58";
     el.dispatchEvent(new Event("input", { bubbles: true }));
   });
@@ -254,21 +381,38 @@ try {
     await guest.evaluate(() => window.__IRON_ORBIT__.audio.getSettings().music),
     0.37,
   );
-  await guest.click("#audio-mute");
+  await guest.locator("#world-sfx-volume").evaluate((el) => {
+    el.value = "19";
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  });
   assert.equal(
-    await guest.evaluate(() => window.__IRON_ORBIT__.audio.diagnostics().muted),
-    true,
+    await guest.locator("#audio-panel input[type=range]").count(),
+    3,
   );
-  assert.equal(
-    await guest.evaluate(
-      () => JSON.parse(localStorage.getItem("iron-orbit-audio")).sfx,
+  assert.deepEqual(
+    await guest.evaluate(() =>
+      JSON.parse(localStorage.getItem("iron-orbit-audio")),
     ),
-    0.58,
+    { uiSfx: 0.58, worldSfx: 0.19, music: 0.37 },
   );
-  await guest.click("#audio-mute");
   await guest.click("#sound");
   await guest.click("#pause");
   const time = await guest.evaluate(() => window.__IRON_ORBIT__.game.time);
+  assert.equal(
+    server.inspectRoom(code).game.paused,
+    false,
+    "Authoritative test fixture resumed",
+  );
+  assert.equal(
+    await guest.evaluate(() => window.__IRON_ORBIT__.multiplayer),
+    true,
+    "Menu remains in multiplayer",
+  );
+  assert.equal(
+    server.inspectRoom(code).game.finished,
+    false,
+    "Menu checked during live battle",
+  );
   await waitFor(
     guest,
     (before) => window.__IRON_ORBIT__.game.time > before + 0.2,
@@ -365,7 +509,7 @@ try {
   );
   assert.deepEqual(errors, [], "No client runtime errors");
   console.log(
-    "Multiplayer browser acceptance passed: mixed lobby, four human clients, guest movement, authority, persistent build plans, music/volume/mute, online menu, elimination, host transfer/rematch, AI takeover, cleanup.",
+    "Multiplayer browser acceptance passed: mixed lobby, four human clients, guest movement, authority, persistent build plans, three audio channels, wall dragging, building memory, online menu, elimination, host transfer/rematch, AI takeover, cleanup.",
   );
 } catch (error) {
   console.error("MULTIPLAYER BROWSER FAILURE", error);

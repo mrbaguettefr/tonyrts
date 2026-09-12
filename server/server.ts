@@ -1,3 +1,4 @@
+import { issueWallLine } from "../src/simulation";
 import { createServer } from "node:http";
 import { randomBytes, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -38,7 +39,7 @@ interface Room {
   frames: number;
 }
 const units = ["constructor", "scout", "tank", "heavy"];
-const buildings = ["extractor", "generator", "factory", "turret"];
+const buildings = ["extractor", "generator", "factory", "turret", "wall"];
 const int = (value: unknown): value is number =>
   Number.isSafeInteger(value) && (value as number) >= 0;
 const label = (value: unknown, fallback: string, max: number): string =>
@@ -110,6 +111,13 @@ function validCommand(value: unknown, game: Game): value is GameCommand {
   if (!value || typeof value !== "object") return false;
   const c = value as Record<string, any>;
   const cell = (v: unknown) => int(v) && v < game.world.cells.length;
+  if (c.type === "wallLine")
+    return (
+      int(c.builderId) &&
+      cell(c.startCell) &&
+      cell(c.endCell) &&
+      (c.append === undefined || typeof c.append === "boolean")
+    );
   if (c.type === "order" || c.type === "stop") {
     if (
       !Array.isArray(c.ids) ||
@@ -345,7 +353,10 @@ export async function startServer(
         return;
       }
       const c = message.command;
-      const ids = "ids" in c ? c.ids : [c.factoryId];
+      const ids =
+        "ids" in c
+          ? c.ids
+          : [c.type === "wallLine" ? c.builderId : c.factoryId];
       if (
         ids.some((id) => {
           const entity = game.entities.get(id);
@@ -355,7 +366,16 @@ export async function startServer(
         error(peer, "You can only command your own units");
         return;
       }
-      if (c.type === "order") {
+      if (c.type === "wallLine") {
+        const result = issueWallLine(
+          game,
+          c.builderId,
+          c.startCell,
+          c.endCell,
+          c.append,
+        );
+        if (!result.valid) error(peer, result.reason);
+      } else if (c.type === "order") {
         if (c.order.type === "attack") {
           const target = game.entities.get(c.order.target);
           if (

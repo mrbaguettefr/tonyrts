@@ -14,9 +14,15 @@ export type Kind =
   | "extractor"
   | "generator"
   | "factory"
-  | "turret";
+  | "turret"
+  | "wall";
 export type UnitKind = "constructor" | "scout" | "tank" | "heavy";
-export type BuildingKind = "extractor" | "generator" | "factory" | "turret";
+export type BuildingKind =
+  | "extractor"
+  | "generator"
+  | "factory"
+  | "turret"
+  | "wall";
 export interface Cell {
   id: number;
   dir: Vec3;
@@ -92,6 +98,7 @@ export interface Shot {
   team: Team;
   age: number;
   duration: number;
+  heavy?: boolean;
 }
 export interface Explosion {
   id: number;
@@ -118,7 +125,26 @@ export interface Placement {
   valid: boolean;
   reason: string;
 }
+export interface BuildingObservation {
+  id: number;
+  kind: BuildingKind;
+  team: Team;
+  cell: number;
+  position: Vec3;
+  heading: Vec3;
+  progress: number;
+  connections: Vec3[];
+}
+export interface WallPreview {
+  cells: number[];
+  valid: boolean;
+  reason: string;
+  metal: number;
+  energy: number;
+}
 export interface RenderState {
+  rememberedBuildings?: ReadonlyMap<number, BuildingObservation>;
+  wallPreview?: WallPreview | null;
   selected: Set<number>;
   hoveredCell: number | null;
   building: BuildingKind | null;
@@ -138,7 +164,14 @@ export interface SceneApi {
   zoom(delta: number): void;
   focus(cell: number): void;
   project(cell: number): { x: number; y: number; visible: boolean };
-  diagnostics(): { drawCalls: number; triangles: number; buildPlans?: number };
+  diagnostics(): {
+    drawCalls: number;
+    triangles: number;
+    buildPlans?: number;
+    ghosts?: number;
+    smoke?: number;
+    wallSpans?: number;
+  };
   resize(): void;
   dispose(): void;
 }

@@ -25,6 +25,13 @@ export interface LobbyRoom {
   slots: LobbySlot[];
 }
 export type GameCommand =
+  | {
+      type: "wallLine";
+      builderId: number;
+      startCell: number;
+      endCell: number;
+      append?: boolean;
+    }
   | { type: "order"; ids: number[]; order: Order; append?: boolean }
   | { type: "stop"; ids: number[] }
   | { type: "produce"; factoryId: number; kind: UnitKind }
