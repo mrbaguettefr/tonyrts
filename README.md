@@ -2,6 +2,8 @@
 
 A browser RTS on a procedurally generated spherical planet. One industrial robot faction, land warfare, a streaming metal-and-energy economy, fog of war, and one AI opponent. Destroy the opposing commander to win.
 
+**[Play Iron Orbit](https://mrbaguettefr.github.io/tonyrts/)** — desktop mouse and keyboard required.
+
 See [the validation record](VALIDATION.md) for the specialist review loop, test results, and measured performance limitations.
 
 ## Run
@@ -14,6 +16,12 @@ npm run dev
 ```
 
 Open the local URL printed by Vite. Choose a world seed and deploy. `npm run build` creates a static site in `dist/`; `npm run preview` serves that build locally. There is no backend or account requirement.
+
+## Deployment
+
+GitHub Actions tests, builds, and deploys the game to GitHub Pages on every push to `main`. You can also run the **Deploy game to GitHub Pages** workflow manually from the Actions tab. The build uses the Pages base path so assets load correctly under `/tonyrts/`.
+
+For a new repository, select **GitHub Actions** as the source under **Settings → Pages**. To check the repository-path build locally, run `npm run build -- --base /tonyrts/`, then `npm run preview` and open `/tonyrts/`.
 
 ## Play
 
