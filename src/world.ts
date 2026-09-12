@@ -7,6 +7,79 @@ const normalize = (v: Vec3): Vec3 => {
 };
 const arc = (a: Vec3, b: Vec3) =>
   Math.acos(Math.max(-1, Math.min(1, dot(a, b))));
+
+interface DirectionNode {
+  min: Vec3;
+  max: Vec3;
+  ids: number[];
+  children?: [DirectionNode, DirectionNode];
+}
+
+/** Exact maximum-dot search over the planet's immutable cell directions. */
+function indexDirections(cells: Cell[]): (point: Vec3) => number {
+  function build(ids: number[]): DirectionNode {
+    const min: Vec3 = [Infinity, Infinity, Infinity];
+    const max: Vec3 = [-Infinity, -Infinity, -Infinity];
+    for (const id of ids)
+      for (let axis = 0; axis < 3; axis++) {
+        min[axis] = Math.min(min[axis], cells[id].dir[axis]);
+        max[axis] = Math.max(max[axis], cells[id].dir[axis]);
+      }
+    if (ids.length <= 8) return { min, max, ids };
+    let axis = 0;
+    for (let candidate = 1; candidate < 3; candidate++)
+      if (max[candidate] - min[candidate] > max[axis] - min[axis])
+        axis = candidate;
+    ids.sort((a, b) => cells[a].dir[axis] - cells[b].dir[axis] || a - b);
+    const middle = ids.length >> 1;
+    return {
+      min,
+      max,
+      ids: [],
+      children: [build(ids.slice(0, middle)), build(ids.slice(middle))],
+    };
+  }
+  const root = build(cells.map((cell) => cell.id));
+  // Use the same operation order as dot(). Each corner component maximizes
+  // its product, so the bound remains conservative even at floating-point ties.
+  const bound = (node: DirectionNode, dir: Vec3) =>
+    (dir[0] >= 0 ? node.max[0] : node.min[0]) * dir[0] +
+    (dir[1] >= 0 ? node.max[1] : node.min[1]) * dir[1] +
+    (dir[2] >= 0 ? node.max[2] : node.min[2]) * dir[2];
+  return (point) => {
+    const dir = normalize(point);
+    // The original scan returns cell zero when normalization produces NaN.
+    if (dir.some(Number.isNaN)) return 0;
+    let best = -Infinity,
+      id = 0;
+    function search(node: DirectionNode, upper: number) {
+      if (upper < best) return;
+      if (!node.children) {
+        for (const candidate of node.ids) {
+          const score = dot(cells[candidate].dir, dir);
+          if (score > best || (score === best && candidate < id)) {
+            best = score;
+            id = candidate;
+          }
+        }
+        return;
+      }
+      const [left, right] = node.children;
+      const a = bound(left, dir),
+        b = bound(right, dir);
+      if (a >= b) {
+        search(left, a);
+        search(right, b);
+      } else {
+        search(right, b);
+        search(left, a);
+      }
+    }
+    search(root, bound(root, dir));
+    return id;
+  };
+}
+
 function random(seed: string) {
   let state = 2166136261;
   for (const c of seed) state = Math.imul(state ^ c.charCodeAt(0), 16777619);
@@ -319,7 +392,7 @@ export function createWorld(seed: string, playerCount = 2): World {
     cells,
     triangles: faces,
     spawns,
-    nearest: (p) => closest(p),
+    nearest: indexDirections(cells),
     path,
     distance,
   };
