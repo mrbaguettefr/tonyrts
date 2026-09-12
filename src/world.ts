@@ -20,7 +20,9 @@ function random(seed: string) {
 }
 
 /** A seam-free navigation mesh: terrain and adjacency share the same icosphere. */
-export function createWorld(seed: string): World {
+export function createWorld(seed: string, playerCount = 2): World {
+  if (!Number.isInteger(playerCount) || playerCount < 2 || playerCount > 4)
+    throw new Error("Planet supports 2–4 player slots");
   const radius = 60,
     phi = (1 + Math.sqrt(5)) / 2;
   const dirs: Vec3[] = [
@@ -96,10 +98,36 @@ export function createWorld(seed: string): World {
   }
   const rng = random(seed),
     phase = Array.from({ length: 9 }, () => rng() * Math.PI * 2);
-  const starts: [Vec3, Vec3] = [
-    normalize([1, 0.25, 0.8]),
-    normalize([-1, -0.1, -0.8]),
-  ];
+  let starts: Vec3[] = [normalize([1, 0.25, 0.8]), normalize([-1, -0.1, -0.8])];
+  if (playerCount > 2) {
+    const raw: Vec3[] =
+      playerCount === 4
+        ? [
+            [1, 1, 1],
+            [1, -1, -1],
+            [-1, 1, -1],
+            [-1, -1, 1],
+          ]
+        : [0, 1, 2].map(
+            (i) =>
+              [
+                Math.cos((i * Math.PI * 2) / 3),
+                0,
+                Math.sin((i * Math.PI * 2) / 3),
+              ] as Vec3,
+          );
+    const yaw = phase[6],
+      tilt = phase[7];
+    starts = raw.map(normalize).map(([x, y, z]) => {
+      const a = x * Math.cos(yaw) - z * Math.sin(yaw);
+      const b = x * Math.sin(yaw) + z * Math.cos(yaw);
+      return [
+        a,
+        y * Math.cos(tilt) - b * Math.sin(tilt),
+        y * Math.sin(tilt) + b * Math.cos(tilt),
+      ];
+    });
+  }
   const cells: Cell[] = dirs.map((dir, id) => {
     const [x, y, z] = dir;
     const broad =
@@ -113,7 +141,7 @@ export function createWorld(seed: string): World {
         1) *
       0.2;
     let height = Math.min(9, ridge + detail);
-    const startDistance = Math.min(arc(dir, starts[0]), arc(dir, starts[1]));
+    const startDistance = Math.min(...starts.map((start) => arc(dir, start)));
     const t = Math.max(0, Math.min(1, (startDistance - 0.24) / 0.18));
     height = 0.15 + (height - 0.15) * t * t * (3 - 2 * t);
     return {
@@ -181,10 +209,7 @@ export function createWorld(seed: string): World {
     }
     return id;
   };
-  const spawns: [number, number] = [
-    closest(starts[0], true),
-    closest(starts[1], true),
-  ];
+  const spawns = starts.map((start) => closest(start, true));
   const distance = (a: number, b: number) =>
     arc(cells[a]!.dir, cells[b]!.dir) * radius;
   // Three guaranteed deposits around each start; deposits never occupy the commander cell.

@@ -305,3 +305,146 @@ test("simultaneous factories respect 100 mobile units including commander", () =
     100,
   );
 });
+
+const fourWorld = createWorld("four-player-tests", 4);
+const humans = Array.from({ length: 4 }, (_, i) => ({
+  name: `Player ${i + 1}`,
+  controller: "human" as const,
+}));
+test("four humans have independent resources and fog and receive no AI orders", () => {
+  const g = createGame(fourWorld, humans);
+  assert.equal(g.entities.size, 4);
+  for (let team = 0; team < 4; team++) {
+    g.players[team].metal = team * 10;
+    assert.equal(g.visible[team][fourWorld.spawns[team]], 1);
+    assert.equal(g.visible[team][fourWorld.spawns[(team + 1) % 4]], 0);
+  }
+  advance(g, 3);
+  for (let team = 0; team < 4; team++)
+    assert.equal(g.players[team].metal, team * 10 + 6);
+  assert.ok([...g.entities.values()].every((e) => e.orders.length === 0));
+  assert.equal(g.entities.size, 4);
+});
+test("mixed controllers execute AI only for AI slots; closed slots have no assets or income", () => {
+  const g = createGame(fourWorld, [
+    humans[0],
+    { name: "Closed", controller: "closed" },
+    { name: "AI", controller: "ai" },
+    humans[3],
+  ]);
+  assert.equal(g.players[1].eliminated, true);
+  assert.equal(g.entities.size, 3);
+  advance(g, 15);
+  assert.equal(g.players[1].metalIncome, 0);
+  assert.equal(g.players[1].energyIncome, 0);
+  assert.equal(g.players[1].metal, 400);
+  assert.ok(
+    [...g.entities.values()].some(
+      (e) => e.team === 2 && SPECS[e.kind].building,
+    ),
+  );
+  assert.ok(
+    [...g.entities.values()]
+      .filter((e) => e.team === 0 || e.team === 3)
+      .every((e) => e.kind === "commander" && e.orders.length === 0),
+  );
+});
+test("eliminating a player removes all assets and orders, match continues until last survivor", () => {
+  const g = createGame(fourWorld, humans);
+  const commanders = [...g.entities.values()];
+  g.entities.set(100, {
+    ...commanders[2],
+    id: 100,
+    kind: "factory",
+    queue: ["tank"],
+    orders: [],
+  });
+  commanders[2].hp = 0;
+  tick(g, 0.25);
+  assert.equal(g.players[2].eliminated, true);
+  assert.ok([...g.entities.values()].every((e) => e.team !== 2));
+  assert.equal(g.players[2].metalIncome, 0);
+  assert.equal(g.visible[2].some(Boolean), false);
+  assert.equal(g.finished, false);
+  assert.equal(g.winner, null);
+  assert.equal(canPlace(g, 2, "generator", fourWorld.spawns[2]).valid, false);
+  const resources = g.players[2].metal;
+  commanders[0].hp = 0;
+  tick(g, 0.25);
+  assert.equal(g.finished, false);
+  assert.equal(g.players[2].metal, resources);
+  commanders[1].hp = 0;
+  tick(g, 0.25);
+  assert.equal(g.finished, true);
+  assert.equal(g.winner, 3);
+  const time = g.time;
+  tick(g, 0.25);
+  assert.equal(g.time, time);
+});
+test("simultaneous commander destruction produces a frozen draw", () => {
+  const g = createGame(fourWorld, humans);
+  for (const e of g.entities.values()) e.hp = 0;
+  tick(g, 0.25);
+  assert.equal(g.finished, true);
+  assert.equal(g.winner, null);
+  assert.equal(g.entities.size, 0);
+  const time = g.time;
+  tick(g, 0.25);
+  assert.equal(g.time, time);
+});
+test("four-player production caps each side independently at 100 mobile units", () => {
+  const g = createGame(fourWorld, humans);
+  const commanders = [...g.entities.values()];
+  for (const commander of commanders) {
+    for (let i = 0; i < 99; i++) {
+      const id = 1000 + commander.team * 200 + i;
+      const cell =
+        fourWorld.cells[(commander.cell + i) % fourWorld.cells.length];
+      g.entities.set(id, {
+        ...commander,
+        id,
+        kind: "constructor",
+        cell: cell.id,
+        position: [...cell.position],
+        orders: [],
+        path: [],
+        queue: [],
+      });
+    }
+    const cell = fourWorld.cells[commander.cell].neighbors.find(
+      (n) => fourWorld.cells[n].passable,
+    )!;
+    const id = 2000 + commander.team;
+    g.entities.set(id, {
+      ...commander,
+      id,
+      kind: "factory",
+      cell,
+      position: [...fourWorld.cells[cell].position],
+      orders: [],
+      path: [],
+      queue: ["scout"],
+      production: 0.999,
+    });
+  }
+  tick(g, 0.25);
+  for (const team of [0, 1, 2, 3]) {
+    assert.equal(
+      [...g.entities.values()].filter(
+        (e) => e.team === team && !SPECS[e.kind].building,
+      ).length,
+      100,
+    );
+    assert.equal(g.entities.get(2000 + team)?.queue.length, 1);
+  }
+  g.entities.delete(1000 + 3 * 200);
+  tick(g, 0.25);
+  assert.equal(g.entities.get(2003)?.queue.length, 0);
+  assert.equal(g.entities.get(2000)?.queue.length, 1);
+  assert.equal(
+    [...g.entities.values()].filter(
+      (e) => e.team === 3 && !SPECS[e.kind].building,
+    ).length,
+    100,
+  );
+});

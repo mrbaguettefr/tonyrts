@@ -1,11 +1,12 @@
 import * as THREE from "three";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
+import { gatherBuildPlans } from "./build-plans";
 import { SPECS, canPlace } from "./simulation";
 import type { Entity, Game, Kind, RenderState, SceneApi, Vec3 } from "./types";
 
 const v = (p: Vec3) => new THREE.Vector3(...p);
 const UP = new THREE.Vector3(0, 1, 0);
-const TEAM = [0x65e3db, 0xff7965];
+const TEAM = [0x65e3db, 0xff7965, 0xf4c75e, 0xb893ff];
 
 export function createScene(container: HTMLElement, initial: Game): SceneApi {
   const scene = new THREE.Scene();
@@ -21,12 +22,13 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
   renderer.toneMappingExposure = 1.05;
   container.appendChild(renderer.domElement);
   const camera = new THREE.PerspectiveCamera(43, 1, 0.1, 1600);
-  const ambient = new THREE.HemisphereLight(0xb6d6e2, 0x25362e, 1.8);
+  // Uniform base illumination keeps every player hemisphere readable.
+  const ambient = new THREE.AmbientLight(0xc1ced0, 1.15);
   scene.add(ambient);
   const sun = new THREE.DirectionalLight(0xffefd5, 2.3);
   sun.position.set(110, 170, 130);
   scene.add(sun);
-  const fill = new THREE.DirectionalLight(0x6ba9da, 0.8);
+  const fill = new THREE.DirectionalLight(0xc0d4df, 0.85);
   fill.position.set(-100, -50, -80);
   scene.add(fill);
   let game = initial;
@@ -322,6 +324,86 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
   );
   preview.visible = false;
   scene.add(preview);
+  const planBatches = new Map<string, THREE.InstancedMesh>();
+  const planMaterials = [true, false].map(
+    (active) =>
+      new THREE.MeshBasicMaterial({
+        color: active ? 0x8effdf : 0xe6c987,
+        transparent: true,
+        opacity: active ? 0.64 : 0.32,
+        wireframe: true,
+        depthWrite: false,
+      }),
+  );
+  const planRings = planMaterials.map((mat) =>
+    batch(ringGeo, mat, game.world.cells.length * 4),
+  );
+  const labelMaterials = new Map<number, THREE.SpriteMaterial>();
+  const planLabels: THREE.Sprite[] = [];
+  let buildPlanCount = 0;
+  function labelMaterial(step: number) {
+    let material = labelMaterials.get(step);
+    if (!material) {
+      const canvas = document.createElement("canvas");
+      canvas.width = 128;
+      canvas.height = 64;
+      const ctx = canvas.getContext("2d")!;
+      ctx.fillStyle = "rgba(6,13,24,0.8)";
+      ctx.fillRect(12, 2, 104, 60);
+      ctx.font = "bold 44px sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = "#ffffff";
+      ctx.fillText(String(step), 64, 34);
+      const map = new THREE.CanvasTexture(canvas);
+      material = new THREE.SpriteMaterial({ map, depthWrite: false });
+      labelMaterials.set(step, material);
+    }
+    return material;
+  }
+  function updateBuildPlans() {
+    const plans = state.overview
+      ? []
+      : gatherBuildPlans(game, state.localTeam ?? 0);
+    buildPlanCount = plans.length;
+    for (const mesh of planBatches.values()) mesh.count = 0;
+    for (const mesh of planRings) mesh.count = 0;
+    for (const label of planLabels) label.visible = false;
+    plans.forEach((plan, index) => {
+      const tint = plan.active ? 0 : 1;
+      const key = `${plan.kind}:${state.localTeam ?? 0}:${tint}`;
+      let mesh = planBatches.get(key);
+      if (!mesh) {
+        mesh = batch(
+          model(plan.kind, state.localTeam ?? 0),
+          planMaterials[tint],
+          game.world.cells.length,
+        );
+        planBatches.set(key, mesh);
+      }
+      const cell = game.world.cells[plan.cell];
+      dummy.position.copy(v(cell.position)).addScaledVector(v(cell.dir), 0.2);
+      dummy.quaternion.setFromUnitVectors(UP, v(cell.dir));
+      dummy.scale.setScalar(1);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(mesh.count++, dummy.matrix);
+      dummy.scale.setScalar(SPECS[plan.kind].size + 0.45);
+      dummy.updateMatrix();
+      planRings[tint].setMatrixAt(planRings[tint].count++, dummy.matrix);
+      let label = planLabels[index];
+      if (!label) {
+        label = new THREE.Sprite(labelMaterial(plan.step));
+        planLabels.push(label);
+        scene.add(label);
+      }
+      label.material = labelMaterial(plan.step);
+      label.position.copy(v(cell.position)).addScaledVector(v(cell.dir), 4.5);
+      label.scale.set(3, 1.5, 1);
+      label.visible = true;
+    });
+    for (const mesh of [...planBatches.values(), ...planRings])
+      mesh.instanceMatrix.needsUpdate = true;
+  }
   const shotGeo = new THREE.SphereGeometry(0.15, 6, 4);
   const shotBatches = TEAM.map((color) =>
     batch(shotGeo, new THREE.MeshBasicMaterial({ color })),
@@ -343,6 +425,7 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
   );
   scene.add(paths);
   let pathSignature = "";
+  let lastViewer = -1;
   let lastFog = -1,
     lastOverview: boolean | undefined;
   function updateCamera() {
@@ -366,6 +449,10 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
       camera.setViewOffset(width, height, -width * 0.19, 0, width, height);
     else camera.clearViewOffset();
     camera.updateMatrixWorld();
+    // Camera-relative studio lighting preserves shape across the entire globe;
+    // terrain vertex colors continue to control fog-of-war darkness.
+    sun.position.set(-90, 120, 180).applyQuaternion(camera.quaternion);
+    fill.position.set(130, -40, 100).applyQuaternion(camera.quaternion);
   }
   function setTransform(
     object: THREE.Object3D,
@@ -391,7 +478,10 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
     } else object.position.copy(v(entity.position));
   }
   function visibleEntity(entity: Entity) {
-    return entity.team === 0 || Boolean(game.visible[0][entity.cell]);
+    return (
+      entity.team === (state.localTeam ?? 0) ||
+      Boolean(game.visible[state.localTeam ?? 0][entity.cell])
+    );
   }
   function unobscured(point: THREE.Vector3) {
     const direction = point.clone().sub(camera.position);
@@ -408,13 +498,21 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
       if (lastOverview !== state.overview) updateCamera();
       if (
         Math.floor(game.time * 4) !== lastFog ||
-        lastOverview !== state.overview
+        lastOverview !== state.overview ||
+        lastViewer !== (state.localTeam ?? 0)
       ) {
         lastFog = Math.floor(game.time * 4);
+        lastViewer = state.localTeam ?? 0;
+        ringMat.color.setHex(TEAM[lastViewer]);
+        pathMaterial.color.setHex(TEAM[lastViewer]);
         lastOverview = state.overview;
         faceCells.forEach((ids, face) => {
-          const visible = ids.some((id) => game.visible[0][id]),
-            explored = ids.some((id) => game.explored[0][id]);
+          const visible = ids.some(
+              (id) => game.visible[state.localTeam ?? 0][id],
+            ),
+            explored = ids.some(
+              (id) => game.explored[state.localTeam ?? 0][id],
+            );
           const brightness =
             state.overview || visible ? 1 : explored ? 0.4 : 0.12;
           for (let k = 0; k < 9; k++)
@@ -423,9 +521,9 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
         terrainGeo.attributes.color.needsUpdate = true;
         rockCells.forEach((cell, index) => {
           const brightness =
-            state.overview || game.visible[0][cell.id]
+            state.overview || game.visible[state.localTeam ?? 0][cell.id]
               ? 1
-              : game.explored[0][cell.id]
+              : game.explored[state.localTeam ?? 0][cell.id]
                 ? 0.4
                 : 0.12;
           rocks.setColorAt(
@@ -436,7 +534,7 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
         if (rocks.instanceColor) rocks.instanceColor.needsUpdate = true;
         nodes.count = 0;
         for (const cell of metalCells)
-          if (state.overview || game.explored[0][cell.id]) {
+          if (state.overview || game.explored[state.localTeam ?? 0][cell.id]) {
             nodeDummy.position.copy(
               v(cell.position).addScaledVector(v(cell.dir), 0.8),
             );
@@ -481,7 +579,9 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
         ? []
         : [...state.selected]
             .map((id) => game.entities.get(id))
-            .filter((entity): entity is Entity => Boolean(entity));
+            .filter((entity): entity is Entity =>
+              Boolean(entity && entity.team === (state.localTeam ?? 0)),
+            );
       for (const entity of selected) {
         const object = visuals.get(entity.id)!;
         dummy.position
@@ -508,7 +608,13 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
       const signature = selected
         .map(
           (entity) =>
-            entity.id + ":" + entity.cell + ":" + entity.path.join(","),
+            entity.id +
+            ":" +
+            entity.cell +
+            ":" +
+            entity.path.join(",") +
+            ":" +
+            JSON.stringify(entity.orders),
         )
         .join("|");
       if (signature !== pathSignature) {
@@ -518,7 +624,14 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
           let previous = v(
             game.world.cells[entity.cell].position,
           ).addScaledVector(v(game.world.cells[entity.cell].dir), 0.25);
-          for (const cellId of entity.path) {
+          const route = [...entity.path];
+          let lastCell = route.at(-1) ?? entity.cell;
+          for (const order of entity.orders) {
+            if (order.type !== "build") continue;
+            route.push(...game.world.path(lastCell, order.cell));
+            lastCell = order.cell;
+          }
+          for (const cellId of route) {
             const cell = game.world.cells[cellId],
               next = v(cell.position).addScaledVector(v(cell.dir), 0.25);
             vertices.push(
@@ -540,16 +653,17 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
         );
         paths.visible = vertices.length > 0;
       }
+      updateBuildPlans();
       preview.visible =
         !state.overview &&
         Boolean(state.building && state.hoveredCell !== null);
       if (preview.visible) {
         const cell = game.world.cells[state.hoveredCell!];
-        preview.geometry = model(state.building!, 0);
+        preview.geometry = model(state.building!, state.localTeam ?? 0);
         preview.position.copy(v(cell.position));
         preview.quaternion.setFromUnitVectors(UP, v(cell.dir));
         previewMat.color.set(
-          canPlace(game, 0, state.building!, cell.id).valid
+          canPlace(game, state.localTeam ?? 0, state.building!, cell.id).valid
             ? 0x6fffd0
             : 0xff5b59,
         );
@@ -570,7 +684,11 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
           cells = [game.world.nearest(shot.from), game.world.nearest(shot.to)];
           shotCells.set(shot.id, cells);
         }
-        if (!game.visible[0][cells[0]] && !game.visible[0][cells[1]]) continue;
+        if (
+          !game.visible[state.localTeam ?? 0][cells[0]] &&
+          !game.visible[state.localTeam ?? 0][cells[1]]
+        )
+          continue;
         dummy.position.lerpVectors(
           v(shot.from),
           v(shot.to),
@@ -589,7 +707,7 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
           cell = game.world.nearest(explosion.position);
           explosionCells.set(explosion.id, cell);
         }
-        if (!game.visible[0][cell]) continue;
+        if (!game.visible[state.localTeam ?? 0][cell]) continue;
         dummy.position
           .copy(v(explosion.position))
           .addScaledVector(v(explosion.position).normalize(), 1);
@@ -635,7 +753,7 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
       const rect = renderer.domElement.getBoundingClientRect(),
         result: number[] = [];
       for (const entity of game.entities.values())
-        if (entity.team === 0) {
+        if (entity.team === (state.localTeam ?? 0)) {
           const pos = (
             visuals.get(entity.id)?.position.clone() ?? v(entity.position)
           ).addScaledVector(v(entity.position).normalize(), 1);
@@ -708,6 +826,7 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
       return {
         drawCalls: renderer.info.render.calls,
         triangles: renderer.info.render.triangles,
+        buildPlans: buildPlanCount,
       };
     },
     dispose() {
@@ -720,6 +839,11 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
             : [mesh.material])
             m.dispose();
       });
+      labelMaterials.forEach((material) => {
+        material.map?.dispose();
+        material.dispose();
+      });
+      planMaterials.forEach((material) => material.dispose());
       models.forEach((geometry) => geometry.dispose());
       renderer.dispose();
       renderer.domElement.remove();

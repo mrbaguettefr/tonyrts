@@ -1,5 +1,10 @@
 export type Vec3 = [number, number, number];
-export type Team = 0 | 1;
+export type Team = 0 | 1 | 2 | 3;
+export type Controller = "human" | "ai" | "closed";
+export interface PlayerSetup {
+  name: string;
+  controller: Controller;
+}
 export type Kind =
   | "commander"
   | "constructor"
@@ -27,7 +32,7 @@ export interface World {
   radius: number;
   cells: Cell[];
   triangles: number[];
-  spawns: [number, number];
+  spawns: number[];
   nearest(point: Vec3): number;
   path(from: number, to: number, blocked?: Set<number>): number[];
   distance(a: number, b: number): number;
@@ -68,6 +73,9 @@ export interface Entity {
   rally: number | null;
 }
 export interface Player {
+  name: string;
+  controller: Controller;
+  eliminated: boolean;
   metal: number;
   energy: number;
   metalCap: number;
@@ -95,15 +103,16 @@ export interface Explosion {
 export interface Game {
   world: World;
   entities: Map<number, Entity>;
-  players: [Player, Player];
-  visible: [Uint8Array, Uint8Array];
-  explored: [Uint8Array, Uint8Array];
+  players: Player[];
+  visible: Uint8Array[];
+  explored: Uint8Array[];
   time: number;
   paused: boolean;
   winner: Team | null;
+  finished: boolean;
   shots: Shot[];
   explosions: Explosion[];
-  messages: { text: string; time: number }[];
+  messages: { text: string; time: number; team?: Team }[];
 }
 export interface Placement {
   valid: boolean;
@@ -115,6 +124,7 @@ export interface RenderState {
   building: BuildingKind | null;
   attackMode: boolean;
   overview?: boolean;
+  localTeam?: Team;
 }
 export interface SceneApi {
   canvas: HTMLCanvasElement;
@@ -128,7 +138,7 @@ export interface SceneApi {
   zoom(delta: number): void;
   focus(cell: number): void;
   project(cell: number): { x: number; y: number; visible: boolean };
-  diagnostics(): { drawCalls: number; triangles: number };
+  diagnostics(): { drawCalls: number; triangles: number; buildPlans?: number };
   resize(): void;
   dispose(): void;
 }

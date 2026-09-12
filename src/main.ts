@@ -4,11 +4,11 @@ import {
   createGame,
   tick,
   SPECS,
-  issueOrder,
-  stopUnits,
-  enqueueUnit,
-  cancelProduction,
-  setRally,
+  issueOrder as simIssueOrder,
+  stopUnits as simStopUnits,
+  enqueueUnit as simEnqueueUnit,
+  cancelProduction as simCancelProduction,
+  setRally as simSetRally,
   canPlace,
 } from "./simulation";
 import { createScene } from "./scene";
@@ -20,7 +20,15 @@ import type {
   RenderState,
   SceneApi,
   UnitKind,
+  Team,
+  Order,
 } from "./types";
+
+import { NetworkClient } from "./network";
+import { createLobby } from "./lobby";
+import { resolveGameServer } from "./server-address";
+import { createAudio } from "./audio";
+import type { ClientMessage, LobbyRoom } from "./protocol";
 
 const icons: Record<string, string> = {
   orbit:
@@ -69,7 +77,7 @@ app.innerHTML = `
   </div>
   <div class="top-actions"><div class="live"><i></i><span id="status-label">AWAITING DEPLOYMENT</span></div><span id="clock">00:00</span><button class="icon-button" id="sound" title="Enable sound" aria-label="Enable sound">${icon("sound")}</button><button class="icon-button" id="help" title="Controls" aria-label="Controls">${icon("help")}</button><button class="icon-button" id="pause" title="Pause · Esc" aria-label="Pause">${icon("pause")}</button></div>
  </header>
- <aside class="mission-panel game-ui"><div class="eyebrow"><i class="cyan-dot"></i> OPERATION 01</div><h2>Take the high ground.</h2><p>Expand your foothold.<br>Find and destroy the enemy commander.</p><div class="mission-rule"></div><div class="objective"><span class="objective-dot"></span><span>Enemy commander</span><span class="hostile-label">ACTIVE</span></div><div class="objective"><span class="objective-dot friendly"></span><span>Your commander</span><span id="commander-status">ONLINE</span></div></aside>
+ <aside class="mission-panel game-ui"><div class="eyebrow"><i class="cyan-dot"></i> OPERATION 01</div><h2>Take the high ground.</h2><p>Expand your foothold.<br>Find and destroy the enemy commander.</p><div class="mission-rule"></div><div class="objective"><span class="objective-dot"></span><span>Rival commanders</span><span id="opponents-status" class="hostile-label">1 ACTIVE</span></div><div class="objective"><span class="objective-dot friendly"></span><span>Your commander</span><span id="commander-status">ONLINE</span></div><div id="match-roster" class="match-roster"></div></aside>
  <aside class="planet-panel game-ui"><div class="eyebrow">THEATER OF OPERATIONS</div><h3>KEPLER <span>— 09</span></h3><div class="planet-data"><span>CLASS</span><b>TERRESTRIAL</b><span>TOPOLOGY</span><b>SPHERICAL / NO BOUNDARY</b><span>SEED</span><b id="seed-label"></b></div><div class="signal"><i></i><i></i><i></i><i></i><i></i><span>SURFACE LINK ESTABLISHED</span></div></aside>
  <div class="view-label game-ui"><span class="bracket">┌</span><span>SURFACE COMMAND <b>LIVE</b></span><span class="bracket">┐</span></div>
  <div id="toast" role="status"></div>
@@ -81,17 +89,26 @@ app.innerHTML = `
   <section class="command-info"><div class="eyebrow">COMMAND UPLINK</div><button id="focus-commander">${icon("home")}<span>Focus commander</span><kbd>HOME</kbd></button><p><span class="mouse-mark"></span> RIGHT CLICK TO COMMAND</p><p>SHIFT <span>QUEUE ORDERS</span></p><div class="team-badge"><i></i> VANGUARD <span>01 / YOU</span></div></section>
  </footer>
  <div class="bottom-strip game-ui"><span><i class="cyan-dot"></i> VANGUARD SYSTEMS <b>//</b> TACTICAL INTERFACE v0.1</span><span>WASD / MIDDLE DRAG <b>ROTATE</b> <em>·</em> SCROLL <b>ZOOM</b></span></div>
- <section id="launch" class="launch-overlay"><div class="launch-copy"><div class="eyebrow"><span class="tiny-line"></span> A WORLD WITHOUT EDGES</div><h1>One planet.<br><span>Total control.</span></h1><p>Build an industrial war machine. Command your forces across a living sphere. There is no border to hide behind.</p><div class="launch-features"><span>${icon("orbit")} PROCEDURAL PLANET</span><span>${icon("tank")} LAND WARFARE</span><span>${icon("attack")} 1 VS 1 SKIRMISH</span></div><div class="launch-card"><div class="launch-card-heading"><span class="eyebrow">NEW DEPLOYMENT</span><span class="difficulty">STANDARD AI</span></div><label for="seed-input">WORLD SEED <span>Different terrain. Same mission.</span></label><div class="seed-row"><input id="seed-input" value="KEPLER-09" maxlength="32" spellcheck="false" aria-label="World seed"/><button id="random-seed" title="Randomize seed" aria-label="Randomize seed">↻</button></div><button id="deploy" class="primary-button"><span>DEPLOY COMMANDER</span>${icon("arrow")}</button><div class="launch-note">ONE FACTION <i>·</i> ALL LAND <i>·</i> COMMANDER ELIMINATION</div></div></div><div class="launch-coordinate"><span>KEPLER — 09</span><small>PROCEDURAL TERRESTRIAL WORLD</small><div>360° THEATER OF WAR</div></div><div class="launch-bottom"><span>IRON ORBIT <b>/</b> PROTOTYPE 001</span><span>DESKTOP · MOUSE + KEYBOARD</span></div></section>
+ <section id="launch" class="launch-overlay"><div class="launch-copy"><div class="eyebrow"><span class="tiny-line"></span> A WORLD WITHOUT EDGES</div><h1>One planet.<br><span>Total control.</span></h1><p>Build an industrial war machine. Command your forces across a living sphere. There is no border to hide behind.</p><div class="launch-features"><span>${icon("orbit")} PROCEDURAL PLANET</span><span>${icon("tank")} LAND WARFARE</span><span>${icon("attack")} 1–4 COMMANDERS</span></div><div class="launch-card"><div class="launch-card-heading"><span class="eyebrow">NEW DEPLOYMENT</span><span class="difficulty">STANDARD AI</span></div><label for="seed-input">WORLD SEED <span>Different terrain. Same mission.</span></label><div class="seed-row"><input id="seed-input" value="KEPLER-09" maxlength="32" spellcheck="false" aria-label="World seed"/><button id="random-seed" title="Randomize seed" aria-label="Randomize seed">↻</button></div><button id="deploy" class="primary-button"><span>DEPLOY COMMANDER</span>${icon("arrow")}</button><button id="multiplayer-open" class="secondary-button">MULTIPLAYER LOBBY ↗</button><div class="launch-note">ONE FACTION <i>·</i> ALL LAND <i>·</i> LAST COMMANDER STANDING</div></div></div><div class="launch-coordinate"><span>KEPLER — 09</span><small>PROCEDURAL TERRESTRIAL WORLD</small><div>360° THEATER OF WAR</div></div><div class="launch-bottom"><span>IRON ORBIT <b>/</b> PROTOTYPE 001</span><span>DESKTOP · MOUSE + KEYBOARD</span></div></section>
  <div id="modal" class="modal-overlay" hidden><section class="modal-card"><div class="eyebrow" id="modal-eyebrow">COMMAND CENTER</div><h2 id="modal-title">Operation paused</h2><div id="modal-content"></div><div id="modal-actions"></div></section></div>
 `;
 
 const $ = <T extends HTMLElement = HTMLElement>(s: string) =>
   document.querySelector<T>(s)!;
+app.insertAdjacentHTML(
+  "beforeend",
+  `<aside id="audio-panel" class="audio-controls" hidden><div class="eyebrow">AUDIO / ORIGINAL SCORE</div><label for="sfx-volume">Sound effects<input id="sfx-volume" type="range" min="0" max="100" aria-label="Sound effects volume"/></label><label for="music-volume">Music<input id="music-volume" type="range" min="0" max="100" aria-label="Music volume"/></label><button id="audio-mute" class="secondary-button">MUTE ALL</button><p>Procedural ambient music and tactical effects. Your mix is saved on this device.</p></aside>`,
+);
 let game!: Game;
 let scene!: SceneApi;
 let running = false;
-let sound = false;
-let audio: AudioContext | null = null;
+let localTeam: Team = 0;
+let multiplayer = false;
+let network: NetworkClient | null = null;
+let networkUrl = "";
+let currentRoom: LobbyRoom | null = null;
+let connecting = false;
+const audio = createAudio();
 let state: RenderState = {
   selected: new Set(),
   hoveredCell: null,
@@ -104,7 +121,7 @@ let lastUi = "";
 let modalType = "";
 let toastUntil = 0;
 let lastMessage = "";
-let lastShot = 0;
+let seenElimination = false;
 let seenWinner = false;
 let accumulator = 0;
 const keys = new Set<string>();
@@ -117,28 +134,193 @@ const buildings: BuildingKind[] = [
 ];
 const units: UnitKind[] = ["constructor", "scout", "tank", "heavy"];
 
+const lobby = createLobby({
+  create: (name, seed, serverUrl) => {
+    void connectLobby({ type: "create", name, seed }, serverUrl);
+  },
+  join: (name, code, serverUrl) => {
+    void connectLobby({ type: "join", name, code }, serverUrl);
+  },
+  send: (message) => {
+    void audio.unlock();
+    if (message.type === "ready") audio.cue("ready");
+    network?.send(message);
+  },
+  close: () => returnToMenu(),
+});
+
+async function connectLobby(message: ClientMessage, address: string) {
+  if (connecting) return;
+  connecting = true;
+  void audio.unlock();
+  try {
+    const url = resolveGameServer(address, location.origin);
+    try {
+      localStorage.setItem("iron-orbit-server", url);
+    } catch {
+      /* Optional preference storage. */
+    }
+    if (network?.connected && networkUrl !== url) {
+      network.disconnect();
+      network = null;
+    }
+    if (!network?.connected) {
+      network?.disconnect();
+      networkUrl = url;
+      network = new NetworkClient(
+        {
+          onLobby(room, team, clientId) {
+            currentRoom = room;
+            lobby.update(room, team, clientId);
+            if (room.phase === "finished" && running && terminal())
+              showModal("end");
+            if (room.phase === "lobby") {
+              multiplayer = false;
+              running = false;
+              game.paused = true;
+              state.overview = true;
+              modalType = "";
+              $("#modal").hidden = true;
+              $("#launch").hidden = true;
+              document.body.classList.remove("playing");
+              clearMode();
+              lobby.open(room.seed);
+            }
+          },
+          onMatch(next, team, room) {
+            currentRoom = room;
+            multiplayer = true;
+            installGame(next, team, false);
+            running = true;
+            modalType = "";
+            $("#modal").hidden = true;
+            $("#launch").hidden = true;
+            lobby.hide();
+            document.body.classList.add("playing");
+            scene.focus(game.world.spawns[team]);
+            audio.cue("deploy");
+            toast(`Room ${room.code} live. You command side ${team + 1}.`);
+          },
+          onSnapshot() {
+            /* The network client applies authoritative state in place. */
+          },
+          onError(message) {
+            lobby.status(message, true);
+            toast(message);
+            audio.cue("error");
+          },
+          onClose(reason) {
+            const wasPlaying = multiplayer && running;
+            returnToMenu();
+            lobby.open(game.world.seed);
+            lobby.status(
+              reason +
+                (wasPlaying
+                  ? " Your surviving forces are now controlled by AI."
+                  : ""),
+              true,
+            );
+          },
+        },
+        url,
+      );
+      const client = network;
+      await client.connect();
+      if (network !== client) return;
+    }
+    network.send(message);
+  } catch (error) {
+    lobby.status(
+      error instanceof Error ? error.message : "Cannot connect to game server.",
+      true,
+    );
+  } finally {
+    connecting = false;
+  }
+}
+function returnToMenu() {
+  const seed = game.world.seed;
+  if (network?.connected) network.send({ type: "leave" });
+  network?.disconnect();
+  network = null;
+  currentRoom = null;
+  multiplayer = false;
+  running = false;
+  modalType = "";
+  networkUrl = "";
+  $("#modal").hidden = true;
+  $("#launch").hidden = false;
+  document.body.classList.remove("playing");
+  lobby.hide();
+  lobby.reset();
+  init(seed);
+  scene.zoom(600);
+}
+$("#multiplayer-open").addEventListener("click", () => {
+  void audio.unlock();
+  lobby.open(
+    $<HTMLInputElement>("#seed-input").value.trim() || game.world.seed,
+  );
+});
+function syncAudioUi() {
+  const settings = audio.getSettings();
+  $<HTMLInputElement>("#sfx-volume").value = String(
+    Math.round(settings.sfx * 100),
+  );
+  $<HTMLInputElement>("#music-volume").value = String(
+    Math.round(settings.music * 100),
+  );
+  $("#audio-mute").textContent = settings.muted ? "UNMUTE ALL" : "MUTE ALL";
+  $("#sound").classList.toggle("active", !settings.muted);
+  $("#sound").title = "Sound and music settings";
+  $("#sound").setAttribute("aria-label", "Sound and music settings");
+}
+for (const id of ["sfx-volume", "music-volume"])
+  $(`#${id}`).addEventListener("input", () => {
+    void audio.unlock();
+    audio.setVolumes(
+      Number($<HTMLInputElement>("#sfx-volume").value) / 100,
+      Number($<HTMLInputElement>("#music-volume").value) / 100,
+    );
+  });
+$("#audio-mute").addEventListener("click", () => {
+  void audio.unlock();
+  audio.setMuted(!audio.getSettings().muted);
+  syncAudioUi();
+});
+document.addEventListener("pointerdown", (event) => {
+  if (!(event.target as HTMLElement).closest("#sound, #audio-panel"))
+    $("#audio-panel").hidden = true;
+});
+
 function init(seed: string) {
+  installGame(createGame(createWorld(seed)), 0, true);
+}
+function installGame(next: Game, team: Team, overview: boolean) {
   scene?.dispose();
-  game = createGame(createWorld(seed));
-  game.paused = true;
+  game = next;
+  localTeam = team;
+  game.paused = overview;
   scene = createScene($("#viewport"), game);
   state = {
     selected: new Set(),
     hoveredCell: null,
     building: null,
     attackMode: false,
-    overview: true,
+    overview,
+    localTeam,
   };
   const commander = [...game.entities.values()].find(
-    (e) => e.team === 0 && e.kind === "commander",
+    (e) => e.team === localTeam && e.kind === "commander",
   );
   if (commander) state.selected.add(commander.id);
-  $("#seed-label").textContent = seed;
+  $("#seed-label").textContent = game.world.seed;
   groups.clear();
   keys.clear();
   lastUi = "";
   lastMessage = "";
-  lastShot = 0;
+  seenElimination = false;
+  audio.reset();
   seenWinner = false;
   accumulator = 0;
   attachPointer();
@@ -146,24 +328,76 @@ function init(seed: string) {
   updateUi();
 }
 
-function beep(frequency = 440, duration = 0.06) {
-  if (!sound) return;
-  try {
-    audio ??= new AudioContext();
-    void audio.resume();
-    const osc = audio.createOscillator(),
-      gain = audio.createGain();
-    osc.type = "triangle";
-    osc.frequency.value = frequency;
-    gain.gain.setValueAtTime(0.025, audio.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, audio.currentTime + duration);
-    osc.connect(gain);
-    gain.connect(audio.destination);
-    osc.start();
-    osc.stop(audio.currentTime + duration);
-  } catch {
-    /* Audio is optional if unavailable in this browser. */
+function beep(frequency = 440) {
+  audio.cue(
+    frequency < 200
+      ? "error"
+      : frequency >= 700
+        ? "deploy"
+        : frequency >= 600
+          ? "queue"
+          : frequency >= 500
+            ? "move"
+            : frequency <= 350
+              ? "select"
+              : "build",
+  );
+}
+function terminal() {
+  return game.finished || game.winner !== null;
+}
+function eliminated() {
+  return !!game.players[localTeam]?.eliminated;
+}
+function canLook() {
+  return running && !game.paused && !terminal() && !modalType;
+}
+function controllable() {
+  return running && !game.paused && !terminal() && !eliminated() && !modalType;
+}
+function issueOrder(g: Game, ids: number[], order: Order, append = false) {
+  if (multiplayer)
+    network?.send({
+      type: "command",
+      command: { type: "order", ids, order, append },
+    });
+  else simIssueOrder(g, ids, order, append);
+}
+function stopUnits(g: Game, ids: number[]) {
+  if (multiplayer)
+    network?.send({ type: "command", command: { type: "stop", ids } });
+  else simStopUnits(g, ids);
+}
+function enqueueUnit(g: Game, factoryId: number, kind: UnitKind): boolean {
+  if (multiplayer) {
+    const factory = g.entities.get(factoryId);
+    if (
+      !factory ||
+      factory.team !== localTeam ||
+      factory.progress < 1 ||
+      factory.queue.length >= 12
+    )
+      return false;
+    network?.send({
+      type: "command",
+      command: { type: "produce", factoryId, kind },
+    });
+    return true;
   }
+  return simEnqueueUnit(g, factoryId, kind);
+}
+function cancelProduction(g: Game, factoryId: number) {
+  if (multiplayer)
+    network?.send({ type: "command", command: { type: "cancel", factoryId } });
+  else simCancelProduction(g, factoryId);
+}
+function setRally(g: Game, factoryId: number, cell: number) {
+  if (multiplayer)
+    network?.send({
+      type: "command",
+      command: { type: "rally", factoryId, cell },
+    });
+  else simSetRally(g, factoryId, cell);
 }
 function toast(message: string) {
   $("#toast").textContent = message;
@@ -192,18 +426,19 @@ function updateMode() {
 function selectedEntities(): Entity[] {
   return [...state.selected]
     .map((id) => game.entities.get(id))
-    .filter((e): e is Entity => !!e && e.team === 0);
+    .filter((e): e is Entity => !!e && e.team === localTeam);
 }
 function executeAt(x: number, y: number, append: boolean) {
   const hit = scene.pick(x, y);
   if (hit.cell === null) return;
   const selected = selectedEntities();
+  const placing = !!state.building;
   if (!selected.length) {
     toast("Select a unit to issue orders.");
     return;
   }
   if (state.building) {
-    const result = canPlace(game, 0, state.building, hit.cell);
+    const result = canPlace(game, localTeam, state.building, hit.cell);
     if (!result.valid) {
       toast(result.reason);
       beep(150);
@@ -228,7 +463,7 @@ function executeAt(x: number, y: number, append: boolean) {
     const target =
       hit.entity !== null ? game.entities.get(hit.entity) : undefined;
     if (
-      target?.team === 0 &&
+      target?.team === localTeam &&
       SPECS[target.kind].building &&
       target.progress < 1
     ) {
@@ -248,7 +483,7 @@ function executeAt(x: number, y: number, append: boolean) {
         );
         toast(`Resuming ${SPECS[target.kind].name.toLowerCase()} construction`);
         clearMode();
-        beep(540);
+        audio.cue("build");
         return;
       }
     }
@@ -257,7 +492,11 @@ function executeAt(x: number, y: number, append: boolean) {
     const ids = selected
       .filter((e) => !SPECS[e.kind].building)
       .map((e) => e.id);
-    if (target && target.team !== 0 && game.visible[0][target.cell])
+    if (
+      target &&
+      target.team !== localTeam &&
+      game.visible[localTeam][target.cell]
+    )
       issueOrder(game, ids, { type: "attack", target: target.id }, append);
     else
       issueOrder(
@@ -269,7 +508,7 @@ function executeAt(x: number, y: number, append: boolean) {
     if (factories.length) toast("Factory rally point updated");
     clearMode();
   }
-  beep(540);
+  audio.cue(placing ? "build" : "move");
 }
 
 function attachPointer() {
@@ -284,7 +523,7 @@ function attachPointer() {
   } | null = null;
   canvas.addEventListener("contextmenu", (e) => e.preventDefault());
   canvas.addEventListener("pointerdown", (e) => {
-    if (!running || game.paused || game.winner !== null) return;
+    if (!canLook()) return;
     pointer = {
       x: e.clientX,
       y: e.clientY,
@@ -296,7 +535,7 @@ function attachPointer() {
     canvas.setPointerCapture(e.pointerId);
   });
   canvas.addEventListener("pointermove", (e) => {
-    if (running && !game.paused)
+    if (controllable())
       state.hoveredCell = scene.pick(e.clientX, e.clientY).cell;
     if (!pointer) return;
     const dx = e.clientX - pointer.lastX,
@@ -329,7 +568,7 @@ function attachPointer() {
     const p = pointer;
     pointer = null;
     $("#selection-box").style.display = "none";
-    if (game.paused || !running) return;
+    if (!controllable()) return;
     if (p.button === 0) {
       if (state.building || state.attackMode || moveMode)
         executeAt(e.clientX, e.clientY, e.shiftKey);
@@ -343,7 +582,7 @@ function attachPointer() {
           const hit = scene.pick(e.clientX, e.clientY);
           if (
             hit.entity !== null &&
-            game.entities.get(hit.entity)?.team === 0
+            game.entities.get(hit.entity)?.team === localTeam
           ) {
             if (e.shiftKey && state.selected.has(hit.entity))
               state.selected.delete(hit.entity);
@@ -366,18 +605,18 @@ function attachPointer() {
     "wheel",
     (e) => {
       e.preventDefault();
-      if (running && !game.paused) scene.zoom(e.deltaY);
+      if (canLook()) scene.zoom(e.deltaY);
     },
     { passive: false },
   );
 }
 
 function action(name: string) {
-  if (!running || game.paused || game.winner !== null) return;
+  if (!controllable()) return;
   if (name === "stop") {
     stopUnits(game, [...state.selected]);
     clearMode();
-    beep();
+    audio.cue("stop");
   }
   if (name === "attack") {
     clearMode();
@@ -397,7 +636,7 @@ $("#build-options").addEventListener("click", (e) => {
   const button = (e.target as HTMLElement).closest<HTMLButtonElement>(
     "button[data-kind]",
   );
-  if (!button || !running || game.paused || game.winner !== null) return;
+  if (!button || !controllable()) return;
   const kind = button.dataset.kind as Kind;
   if (SPECS[kind].building) {
     const prior = state.building;
@@ -414,18 +653,14 @@ $("#build-options").addEventListener("click", (e) => {
   }
 });
 $("#production-line").addEventListener("click", (e) => {
-  if (
-    (e.target as HTMLElement).closest("[data-cancel]") &&
-    !game.paused &&
-    game.winner === null
-  ) {
+  if ((e.target as HTMLElement).closest("[data-cancel]") && controllable()) {
     const f = selectedEntities().find((e) => e.kind === "factory");
     if (f) cancelProduction(game, f.id);
   }
 });
 function focusCommander() {
   const c = [...game.entities.values()].find(
-    (e) => e.kind === "commander" && e.team === 0,
+    (e) => e.kind === "commander" && e.team === localTeam,
   );
   if (c) {
     scene.focus(c.cell);
@@ -439,42 +674,68 @@ $(".brand").addEventListener("click", (e) => {
   if (running) focusCommander();
 });
 $("#sound").addEventListener("click", () => {
-  sound = !sound;
-  $("#sound").classList.toggle("active", sound);
-  $("#sound").setAttribute("aria-label", sound ? "Mute sound" : "Enable sound");
-  $("#sound").title = sound ? "Mute sound" : "Enable sound";
-  beep();
-  toast(sound ? "Command audio enabled" : "Command audio muted");
+  void audio.unlock();
+  $("#audio-panel").hidden = !$("#audio-panel").hidden;
+  syncAudioUi();
 });
 
 function closeModal() {
+  if (running && terminal()) {
+    showModal("end");
+    return;
+  }
   $("#modal").hidden = true;
   modalType = "";
-  if (running && game.winner === null) game.paused = false;
+  if (running && !terminal() && !multiplayer) game.paused = false;
 }
-function showModal(type: "pause" | "help" | "end") {
-  game.paused = true;
+function showModal(type: "pause" | "help" | "end" | "eliminated") {
+  if (!multiplayer) game.paused = true;
   keys.clear();
   modalType = type;
   $("#modal").hidden = false;
   $("#modal-eyebrow").textContent =
-    type === "end" ? "OPERATION COMPLETE" : "COMMAND CENTER";
+    type === "end"
+      ? "OPERATION COMPLETE"
+      : type === "eliminated"
+        ? "COMMANDER ELIMINATED"
+        : "COMMAND CENTER";
   $("#modal-title").textContent =
     type === "help"
       ? "Know your controls."
       : type === "end"
-        ? game.winner === 0
-          ? "Planet secured."
-          : "Command link lost."
-        : "Operation paused.";
+        ? game.winner === null
+          ? "Mutual destruction."
+          : game.winner === localTeam
+            ? "Planet secured."
+            : "Command link lost."
+        : type === "eliminated"
+          ? "Your commander has fallen."
+          : multiplayer
+            ? "Command menu."
+            : "Operation paused.";
   if (type === "help")
     $("#modal-content").innerHTML =
       `<div class="controls-list"><div><span>Select / box select</span><kbd>LEFT CLICK / DRAG</kbd></div><div><span>Move / attack / rally</span><kbd>RIGHT CLICK</kbd></div><div><span>Rotate planet</span><kbd>WASD / MIDDLE DRAG</kbd></div><div><span>Zoom</span><kbd>SCROLL</kbd></div><div><span>Queue orders / add selection</span><kbd>SHIFT</kbd></div><div><span>Attack move / move / stop</span><kbd>F / M / X</kbd></div><div><span>Construction shortcuts</span><kbd>Q / E / R / T</kbd></div><div><span>Assign / select group</span><kbd>CTRL + 1–9 / 1–9</kbd></div><div><span>Focus commander / pause</span><kbd>HOME / ESC</kbd></div></div><p class="modal-description">Your commander builds and fights. Place extractors on gold deposits, generators for energy, and a factory to field an army. Both resources stream into construction. Right click an unfinished structure with a builder to resume it. Scout the dark terrain and keep your commander alive.</p>`;
   else
     $("#modal-content").innerHTML =
-      `<p class="modal-description">${type === "end" ? (game.winner === 0 ? "The hostile commander has been eliminated. Vanguard controls this world." : "Your commander has been destroyed. Regroup, rebuild, and reclaim the planet.") : "Your forces are holding position. Resume when you’re ready to command."}</p><div class="match-stats"><div><span>OPERATION TIME</span><b>${formatTime(game.time)}</b></div><div><span>FORCES REMAINING</span><b>${[...game.entities.values()].filter((e) => e.team === 0 && !SPECS[e.kind].building).length}</b></div></div>`;
-  $("#modal-actions").innerHTML =
-    `${type !== "end" ? '<button class="primary-button" data-modal="resume">RETURN TO COMMAND ' + icon("arrow") + "</button>" : '<button class="primary-button" data-modal="replay">REPLAY THIS WORLD ' + icon("arrow") + "</button>"}<button class="secondary-button" data-modal="menu">NEW DEPLOYMENT</button>`;
+      `<p class="modal-description">${type === "end" ? (game.winner === null ? "No commander survived the final exchange. The operation ends in a draw." : game.winner === localTeam ? "All rival commanders have been eliminated. You control this world." : "Another commander controls this world. Regroup and prepare for your next deployment.") : type === "eliminated" ? "Your forces have been eliminated. The other commanders are still fighting. You can follow the remaining operation from your explored terrain or leave." : multiplayer ? "This is a live multiplayer battle. Your forces keep fighting while this menu is open. Leaving hands your surviving forces to AI." : "Your forces are holding position. Resume when you’re ready to command."}</p><div class="match-stats"><div><span>OPERATION TIME</span><b>${formatTime(game.time)}</b></div><div><span>FORCES REMAINING</span><b>${[...game.entities.values()].filter((e) => e.team === localTeam && !SPECS[e.kind].building).length}</b></div></div>`;
+  if (multiplayer) {
+    const primary =
+      type !== "end"
+        ? '<button class="primary-button" data-modal="resume">RETURN TO FIELD ' +
+          icon("arrow") +
+          "</button>"
+        : currentRoom?.hostId === network?.clientId
+          ? '<button class="primary-button" data-modal="lobby">RETURN TO LOBBY ' +
+            icon("arrow") +
+            "</button>"
+          : '<p class="multiplayer-notice">Waiting for the host to return everyone to the lobby.</p>';
+    $("#modal-actions").innerHTML =
+      primary +
+      '<button class="secondary-button" data-modal="menu">LEAVE MATCH</button>';
+  } else
+    $("#modal-actions").innerHTML =
+      `${type !== "end" ? '<button class="primary-button" data-modal="resume">RETURN TO COMMAND ' + icon("arrow") + "</button>" : '<button class="primary-button" data-modal="replay">REPLAY THIS WORLD ' + icon("arrow") + "</button>"}<button class="secondary-button" data-modal="menu">NEW DEPLOYMENT</button>`;
 }
 $("#modal-actions").addEventListener("click", (e) => {
   const b = (e.target as HTMLElement).closest<HTMLButtonElement>(
@@ -483,34 +744,28 @@ $("#modal-actions").addEventListener("click", (e) => {
   if (!b) return;
   if (b.dataset.modal === "resume") closeModal();
   else if (b.dataset.modal === "replay") deploy(game.world.seed);
-  else {
-    $("#modal").hidden = true;
-    modalType = "";
-    running = false;
-    game.paused = true;
-    $("#launch").hidden = false;
-    document.body.classList.remove("playing");
-    state.overview = true;
-    clearMode();
-    scene.zoom(900);
-    updateUi();
-  }
+  else if (b.dataset.modal === "lobby") network?.send({ type: "returnLobby" });
+  else returnToMenu();
 });
 $("#pause").addEventListener("click", () => {
-  if (!running || game.winner !== null) return;
+  if (!running || terminal()) return;
   if (modalType) closeModal();
   else showModal("pause");
 });
-$("#help").addEventListener("click", () => showModal("help"));
+$("#help").addEventListener("click", () =>
+  showModal(running && terminal() ? "end" : "help"),
+);
 function deploy(seed: string) {
+  void audio.unlock();
+  network?.disconnect();
+  network = null;
+  currentRoom = null;
+  multiplayer = false;
+  lobby.hide();
+  lobby.reset();
   $("#deploy").setAttribute("disabled", "true");
   try {
-    if (
-      seed !== game.world.seed ||
-      running ||
-      game.time > 0 ||
-      game.winner !== null
-    )
+    if (seed !== game.world.seed || running || game.time > 0 || terminal())
       init(seed);
     running = true;
     state.overview = false;
@@ -519,7 +774,7 @@ function deploy(seed: string) {
     $("#modal").hidden = true;
     modalType = "";
     document.body.classList.add("playing");
-    scene.focus(game.world.spawns[0]);
+    scene.focus(game.world.spawns[localTeam]);
     beep(700);
     toast("Commander deployed. Establish metal and energy production.");
   } catch (e) {
@@ -548,14 +803,18 @@ function formatTime(seconds: number) {
 }
 
 window.addEventListener("keydown", (e) => {
-  if ((e.target as HTMLElement).matches("input,textarea")) return;
+  if (
+    (e.target as HTMLElement).matches("input,textarea,select") ||
+    lobby.visible
+  )
+    return;
   if (e.code === "Escape") {
     if (state.building || state.attackMode || moveMode) clearMode();
-    else if (modalType && game.winner === null) closeModal();
-    else if (running && game.winner === null) showModal("pause");
+    else if (modalType && !terminal()) closeModal();
+    else if (running && !terminal()) showModal("pause");
     return;
   }
-  if (!running || game.paused || game.winner !== null) return;
+  if (!canLook()) return;
   if (
     [
       "KeyW",
@@ -571,7 +830,7 @@ window.addEventListener("keydown", (e) => {
     keys.add(e.code);
     e.preventDefault();
   }
-  if (e.repeat) return;
+  if (!controllable() || e.repeat) return;
   if (e.code === "Home") {
     e.preventDefault();
     focusCommander();
@@ -601,12 +860,13 @@ window.addEventListener("keydown", (e) => {
 window.addEventListener("keyup", (e) => keys.delete(e.code));
 window.addEventListener("blur", () => {
   keys.clear();
-  if (running && !game.paused && game.winner === null) showModal("pause");
+  if (running && !multiplayer && !game.paused && !terminal())
+    showModal("pause");
 });
 window.addEventListener("resize", () => scene?.resize());
 
 function updateUi() {
-  const p = game.players[0];
+  const p = game.players[localTeam];
   for (const resource of ["metal", "energy"] as const) {
     $(`#${resource}`).textContent = Math.floor(p[resource]).toLocaleString();
     $(`#${resource}-cap`).textContent = p[`${resource}Cap`].toLocaleString();
@@ -620,16 +880,54 @@ function updateUi() {
   $("#clock").textContent = formatTime(game.time);
   $("#status-label").textContent = !running
     ? "AWAITING DEPLOYMENT"
-    : game.winner !== null
+    : terminal()
       ? "OPERATION COMPLETE"
       : game.paused
         ? "SIMULATION PAUSED"
-        : "OPERATION LIVE";
-  const friendlies = [...game.entities.values()].filter((e) => e.team === 0);
+        : multiplayer
+          ? `ROOM ${currentRoom?.code || ""} / LIVE`
+          : "OPERATION LIVE";
+  const friendlies = [...game.entities.values()].filter(
+    (e) => e.team === localTeam,
+  );
   $("#unit-count").textContent = friendlies
     .filter((e) => !SPECS[e.kind].building)
     .length.toString()
     .padStart(2, "0");
+  const activeRivals = game.players.filter(
+    (p, team) =>
+      team !== localTeam && p.controller !== "closed" && !p.eliminated,
+  ).length;
+  $("#opponents-status").textContent = `${activeRivals} ACTIVE`;
+  $(".team-badge").childNodes.forEach((node) => {
+    if (node.nodeType === Node.TEXT_NODE)
+      node.textContent = ` ${multiplayer ? "SIDE " + (localTeam + 1) : "VANGUARD"} `;
+  });
+  $(".team-badge span").textContent =
+    `${String(localTeam + 1).padStart(2, "0")} / YOU`;
+  const roster = $("#match-roster");
+  roster.hidden = !multiplayer;
+  if (multiplayer) {
+    roster.replaceChildren();
+    const colors = ["#65e3db", "#ff7965", "#e9bb67", "#b998f5"];
+    game.players.forEach((player, team) => {
+      if (player.controller === "closed") return;
+      const row = document.createElement("div");
+      row.classList.toggle("eliminated", player.eliminated);
+      const dot = document.createElement("i");
+      dot.style.background = colors[team];
+      const name = document.createElement("strong");
+      name.textContent = player.name;
+      const status = document.createElement("span");
+      status.textContent = player.eliminated
+        ? "OUT"
+        : team === localTeam
+          ? "YOU"
+          : player.controller.toUpperCase();
+      row.append(dot, name, status);
+      roster.appendChild(row);
+    });
+  }
   const commander = friendlies.find((e) => e.kind === "commander");
   $("#commander-status").textContent = commander
     ? commander.hp < SPECS.commander.hp * 0.35
@@ -706,7 +1004,9 @@ function updateUi() {
     factory && factory.queue.length
       ? `<div class="production-status"><i style="width:${factory.production * 100}%"></i><span>PRODUCING ${SPECS[factory.queue[0]].name.toUpperCase()} · ${Math.floor(factory.production * 100)}%</span><b>${factory.queue.length} QUEUED</b><button data-cancel title="Cancel current production">×</button></div>`
       : `<div class="build-footnote">${mode === "build" ? '<span class="gold-dot"></span> Extractors require a gold deposit. Construction uses resources over time.' : mode === "produce" ? "Right click the surface to set a rally point." : "Scout unexplored terrain to locate hostile forces."}</div>`;
-  const message = game.messages[game.messages.length - 1];
+  const message = game.messages
+    .filter((m) => m.team === undefined || m.team === localTeam)
+    .at(-1);
   if (message && `${message.time}:${message.text}` !== lastMessage) {
     lastMessage = `${message.time}:${message.text}`;
     toast(message.text);
@@ -714,6 +1014,7 @@ function updateUi() {
 }
 
 try {
+  syncAudioUi();
   init("KEPLER-09");
   scene.zoom(600);
 } catch (error) {
@@ -727,12 +1028,14 @@ let previous = performance.now(),
 function frame(now: number) {
   const dt = Math.min((now - previous) / 1000, 0.1);
   previous = now;
-  if (running && !game.paused && game.winner === null) {
-    accumulator += dt;
-    let steps = 0;
-    while (accumulator >= 0.05 && steps++ < 3) {
-      tick(game, 0.05);
-      accumulator -= 0.05;
+  if (running && !game.paused && !terminal()) {
+    if (!multiplayer) {
+      accumulator += dt;
+      let steps = 0;
+      while (accumulator >= 0.05 && steps++ < 3) {
+        tick(game, 0.05);
+        accumulator -= 0.05;
+      }
     }
     const horizontal =
       Number(keys.has("KeyD") || keys.has("ArrowRight")) -
@@ -740,7 +1043,7 @@ function frame(now: number) {
     const vertical =
       Number(keys.has("KeyS") || keys.has("ArrowDown")) -
       Number(keys.has("KeyW") || keys.has("ArrowUp"));
-    if (horizontal || vertical)
+    if (!modalType && (horizontal || vertical))
       scene.orbit(horizontal * dt * 220, vertical * dt * 220);
   }
   scene.render(game, state, dt);
@@ -749,14 +1052,23 @@ function frame(now: number) {
     updateUi();
     uiElapsed = 0;
   }
-  if (game.shots.length && game.shots[game.shots.length - 1].id !== lastShot) {
-    lastShot = game.shots[game.shots.length - 1].id;
-    beep(90 + Math.random() * 70, 0.05);
-  }
+  audio.update(game, localTeam, {
+    running,
+    menuOpen: !!modalType || lobby.visible,
+  });
   if (now > toastUntil) $("#toast").classList.remove("show");
-  if (game.winner !== null && !seenWinner) {
+  if (terminal() && !seenWinner && running) {
     seenWinner = true;
     showModal("end");
+  } else if (
+    multiplayer &&
+    running &&
+    eliminated() &&
+    !seenElimination &&
+    !terminal()
+  ) {
+    seenElimination = true;
+    showModal("eliminated");
   }
   requestAnimationFrame(frame);
 }
@@ -775,5 +1087,17 @@ if (import.meta.env.DEV)
       return state;
     },
     deploy,
-    tick: (dt: number) => tick(game, dt),
+    tick: (dt: number) => {
+      if (!multiplayer) tick(game, dt);
+    },
+    get multiplayer() {
+      return multiplayer;
+    },
+    get localTeam() {
+      return localTeam;
+    },
+    get network() {
+      return network;
+    },
+    audio,
   };

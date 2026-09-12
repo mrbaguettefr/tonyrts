@@ -5,6 +5,7 @@ import type {
   Kind,
   Order,
   Placement,
+  PlayerSetup,
   Spec,
   Team,
   UnitKind,
@@ -186,15 +187,13 @@ interface Internal {
   routes: Map<string, number[]>;
   occupancy: string;
   los: Map<number, Uint8Array>;
+  mobileCounts: number[];
 }
 const internals = new WeakMap<Game, Internal>();
 const state = (g: Game) => internals.get(g)!;
 const isBuilder = (e: Entity) =>
   e.kind === "commander" || e.kind === "constructor";
-const mobileCount = (g: Game, t: Team) =>
-  [...g.entities.values()].filter(
-    (e) => e.team === t && !SPECS[e.kind].building,
-  ).length;
+const mobileCount = (g: Game, t: Team) => state(g).mobileCounts[t];
 function add(
   g: Game,
   team: Team,
@@ -219,34 +218,44 @@ function add(
     rally: null,
   };
   g.entities.set(e.id, e);
+  if (!SPECS[kind].building) state(g).mobileCounts[team]++;
   return e;
 }
-export function createGame(world: World): Game {
-  const player = () => ({
+export function createGame(
+  world: World,
+  setup: PlayerSetup[] = [
+    { name: "Commander", controller: "human" },
+    { name: "AI Commander", controller: "ai" },
+  ],
+): Game {
+  if (
+    setup.length < 2 ||
+    setup.length > 4 ||
+    world.spawns.length < setup.length
+  )
+    throw new Error("A match requires 2–4 slots and a spawn for each slot");
+  const player = (entry: PlayerSetup) => ({
+    ...entry,
+    eliminated: entry.controller === "closed",
     metal: 400,
     energy: 600,
     metalCap: 1200,
     energyCap: 2000,
-    metalIncome: 2,
-    energyIncome: 7,
+    metalIncome: entry.controller === "closed" ? 0 : 2,
+    energyIncome: entry.controller === "closed" ? 0 : 7,
     metalDrain: 0,
     energyDrain: 0,
   });
   const g: Game = {
     world,
     entities: new Map(),
-    players: [player(), player()],
-    visible: [
-      new Uint8Array(world.cells.length),
-      new Uint8Array(world.cells.length),
-    ],
-    explored: [
-      new Uint8Array(world.cells.length),
-      new Uint8Array(world.cells.length),
-    ],
+    players: setup.map(player),
+    visible: setup.map(() => new Uint8Array(world.cells.length)),
+    explored: setup.map(() => new Uint8Array(world.cells.length)),
     time: 0,
     paused: false,
     winner: null,
+    finished: false,
     shots: [],
     explosions: [],
     messages: [],
@@ -260,9 +269,12 @@ export function createGame(world: World): Game {
     routes: new Map(),
     occupancy: "",
     los: new Map(),
+    mobileCounts: setup.map(() => 0),
   });
-  add(g, 0, "commander", world.spawns[0]);
-  add(g, 1, "commander", world.spawns[1]);
+  setup.forEach((entry, team) => {
+    if (entry.controller !== "closed")
+      add(g, team as Team, "commander", world.spawns[team]);
+  });
   updateFog(g);
   return g;
 }
@@ -274,7 +286,14 @@ export function canPlace(
 ): Placement {
   const c = g.world.cells[cell];
   let reason = "";
-  if (!c || !c.passable || c.slope > 0.48) reason = "Terrain is too steep";
+  if (
+    g.finished ||
+    g.winner !== null ||
+    !g.players[team] ||
+    g.players[team].eliminated
+  )
+    reason = "Player is inactive";
+  else if (!c || !c.passable || c.slope > 0.48) reason = "Terrain is too steep";
   else if (!g.visible[team][cell]) reason = "Requires current vision";
   else if (kind === "extractor" && !c.metal)
     reason = "Requires a metal deposit";
@@ -310,11 +329,12 @@ export function issueOrder(
   order: Order,
   append = false,
 ): void {
-  if (g.winner !== null) return;
+  if (g.finished || g.winner !== null) return;
   for (const id of ids) {
     const e = g.entities.get(id);
     if (
       !e ||
+      g.players[e.team].eliminated ||
       SPECS[e.kind].building ||
       (order.type === "build" && !isBuilder(e))
     )
@@ -335,7 +355,12 @@ export function issueOrder(
 export function stopUnits(g: Game, ids: number[]): void {
   for (const id of ids) {
     const e = g.entities.get(id);
-    if (e) {
+    if (
+      e &&
+      !g.finished &&
+      g.winner === null &&
+      !g.players[e.team].eliminated
+    ) {
       e.orders = [];
       e.path = [];
       state(g).goal.delete(id);
@@ -346,6 +371,9 @@ export function enqueueUnit(g: Game, id: number, kind: UnitKind): boolean {
   const e = g.entities.get(id);
   if (
     !e ||
+    g.finished ||
+    g.winner !== null ||
+    g.players[e.team].eliminated ||
     e.kind !== "factory" ||
     e.progress < 1 ||
     e.queue.length >= 12 ||
@@ -357,14 +385,21 @@ export function enqueueUnit(g: Game, id: number, kind: UnitKind): boolean {
 }
 export function cancelProduction(g: Game, id: number): void {
   const e = g.entities.get(id);
-  if (e) {
+  if (e && !g.finished && g.winner === null && !g.players[e.team].eliminated) {
     e.queue.shift();
     e.production = 0;
   }
 }
 export function setRally(g: Game, id: number, cell: number): void {
   const e = g.entities.get(id);
-  if (e?.kind === "factory" && g.world.cells[cell]?.passable) e.rally = cell;
+  if (
+    !g.finished &&
+    g.winner === null &&
+    e?.kind === "factory" &&
+    !g.players[e.team].eliminated &&
+    g.world.cells[cell]?.passable
+  )
+    e.rally = cell;
 }
 function occupied(g: Game): Set<number> {
   return new Set(
@@ -403,8 +438,7 @@ function uncachedLos(g: Game, a: number, b: number): boolean {
   return true;
 }
 function updateFog(g: Game): void {
-  g.visible[0].fill(0);
-  g.visible[1].fill(0);
+  for (const visible of g.visible) visible.fill(0);
   const cache = state(g).sight;
   for (const e of g.entities.values()) {
     if (e.progress < 1) continue;
@@ -474,13 +508,13 @@ function move(
     state(g).goal.set(e.id, to);
     if (
       !route.length &&
-      e.team === 0 &&
       (!g.messages.length ||
         g.time - g.messages[g.messages.length - 1].time > 2)
     )
       g.messages.push({
         text: "Destination unreachable. Order skipped.",
         time: g.time,
+        team: e.team,
       });
   }
   let budget = SPECS[e.kind].speed * dt;
@@ -607,9 +641,8 @@ function seekFiringPosition(
   }
 }
 
-function ai(g: Game): void {
-  const team: Team = 1,
-    own = [...g.entities.values()].filter((e) => e.team === team),
+function ai(g: Game, team: Team): void {
+  const own = [...g.entities.values()].filter((e) => e.team === team),
     commander = own.find((e) => e.kind === "commander");
   if (!commander) return;
   const builder = own.find((e) => isBuilder(e) && !e.orders.length);
@@ -641,7 +674,7 @@ function ai(g: Game): void {
         (c) => canPlace(g, team, kind, c.id).valid,
       );
     }
-    if (candidates.length && g.players[1].metal > 40)
+    if (candidates.length && g.players[team].metal > 40)
       issueOrder(g, [builder.id], {
         type: "build",
         kind,
@@ -660,7 +693,7 @@ function ai(g: Game): void {
             : "tank",
       );
   const enemies = [...g.entities.values()].filter(
-    (e) => e.team === 0 && g.visible[1][e.cell],
+    (e) => e.team !== team && g.visible[team][e.cell],
   );
   const fighters = own.filter((e) =>
     ["scout", "tank", "heavy"].includes(e.kind),
@@ -678,7 +711,7 @@ function ai(g: Game): void {
       issueOrder(g, [e.id], { type: "attackMove", cell: near.cell });
     else if (e.kind === "scout" || fighters.length >= 5) {
       const options = g.world.cells.filter(
-        (c) => c.passable && !g.explored[1][c.id],
+        (c) => c.passable && !g.explored[team][c.id],
       );
       const c =
         options[
@@ -758,10 +791,20 @@ function separate(g: Game, dt: number, blocked: Set<number>): void {
 }
 
 export function tick(g: Game, dt: number): void {
-  if (g.paused || g.winner !== null || !Number.isFinite(dt) || dt <= 0) return;
+  if (
+    g.paused ||
+    g.finished ||
+    g.winner !== null ||
+    !Number.isFinite(dt) ||
+    dt <= 0
+  )
+    return;
   dt = Math.min(dt, 0.25);
   g.time += dt;
   const s = state(g);
+  s.mobileCounts.fill(0);
+  for (const e of g.entities.values())
+    if (!SPECS[e.kind].building) s.mobileCounts[e.team]++;
   s.fog -= dt;
   s.ai -= dt;
   if (s.fog <= 0) {
@@ -769,7 +812,9 @@ export function tick(g: Game, dt: number): void {
     s.fog = 0.5;
   }
   if (s.ai <= 0) {
-    ai(g);
+    g.players.forEach((p, team) => {
+      if (p.controller === "ai" && !p.eliminated) ai(g, team as Team);
+    });
     s.ai = 2;
   }
   g.shots = g.shots.filter((x) => (x.age += dt) < x.duration);
@@ -899,7 +944,9 @@ export function tick(g: Game, dt: number): void {
       });
     }
   }
-  for (const team of [0, 1] as Team[]) {
+  for (let index = 0; index < g.players.length; index++) {
+    const team = index as Team;
+    if (g.players[team].eliminated) continue;
     const p = g.players[team],
       own = [...g.entities.values()].filter(
         (e) => e.team === team && e.progress === 1,
@@ -927,8 +974,17 @@ export function tick(g: Game, dt: number): void {
     tasks.forEach((w) => w.apply(r));
   }
   separate(g, dt, blocked);
+  const defeated = new Set<Team>();
+  for (const e of g.entities.values())
+    if (e.hp <= 0 && e.kind === "commander") defeated.add(e.team);
+  for (const team of defeated) {
+    const p = g.players[team];
+    p.eliminated = true;
+    p.metalIncome = p.energyIncome = p.metalDrain = p.energyDrain = 0;
+    g.messages.push({ text: `${p.name} eliminated.`, time: g.time });
+  }
   for (const e of [...g.entities.values()])
-    if (e.hp <= 0) {
+    if (e.hp <= 0 || defeated.has(e.team)) {
       g.entities.delete(e.id);
       s.goal.delete(e.id);
       g.explosions.push({
@@ -938,15 +994,26 @@ export function tick(g: Game, dt: number): void {
         duration: 1.2,
         size: SPECS[e.kind].size * 2,
       });
-      if (e.kind === "commander") {
-        g.winner = e.team === 0 ? 1 : 0;
-        g.messages.push({
-          text:
-            g.winner === 0
-              ? "Enemy commander destroyed. Victory."
-              : "Commander lost. Defeat.",
-          time: g.time,
-        });
-      }
     }
+  if (defeated.size) {
+    for (const e of g.entities.values())
+      e.orders = e.orders.filter(
+        (o) => o.type !== "attack" || g.entities.has(o.target),
+      );
+    updateFog(g);
+    const survivors = g.players.flatMap((p, team) =>
+      p.eliminated ? [] : [team as Team],
+    );
+    if (survivors.length <= 1) {
+      g.finished = true;
+      g.winner = survivors[0] ?? null;
+      g.messages.push({
+        text:
+          g.winner === null
+            ? "All commanders destroyed. Draw."
+            : `${g.players[g.winner].name} wins.`,
+        time: g.time,
+      });
+    }
+  }
 }
