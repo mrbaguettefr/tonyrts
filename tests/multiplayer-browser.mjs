@@ -115,6 +115,20 @@ try {
     true,
     "Guest commander initially selected",
   );
+  await guest.waitForSelector("#match-roster strong");
+  await guest.evaluate(() => {
+    window.__rosterRows = [...document.querySelector("#match-roster").children];
+  });
+  await guest.waitForTimeout(400);
+  assert.equal(
+    await guest.evaluate(() =>
+      [...document.querySelector("#match-roster").children].every(
+        (row, i) => row === window.__rosterRows[i],
+      ),
+    ),
+    true,
+    "Snapshot and HUD updates retain existing roster rows",
+  );
 
   // A non-host human issues a real pointer movement command, applied by the server.
   const target = await guest.evaluate(() => {

@@ -118,6 +118,29 @@ let state: RenderState = {
 };
 let moveMode = false;
 let lastUi = "";
+const rosterRows = new Map<
+  number,
+  {
+    row: HTMLDivElement;
+    name: HTMLElement;
+    status: HTMLElement;
+  }
+>();
+$("#production-line").innerHTML =
+  '<div class="production-status" hidden><i></i><span></span><b></b><button data-cancel title="Cancel current production">×</button></div><div class="build-footnote" hidden><span class="gold-dot" hidden></span><span data-footnote></span></div>';
+const productionStatus = $("#production-line .production-status");
+const productionBar = productionStatus.querySelector("i")!;
+const productionLabel = productionStatus.querySelector("span")!;
+const productionCount = productionStatus.querySelector("b")!;
+const productionFootnote = $("#production-line .build-footnote");
+const productionDot =
+  productionFootnote.querySelector<HTMLElement>(".gold-dot")!;
+const productionHint =
+  productionFootnote.querySelector<HTMLElement>("[data-footnote]")!;
+let lastProductionProgress = -1;
+function setText(element: HTMLElement, value: string) {
+  if (element.textContent !== value) element.textContent = value;
+}
 let modalType = "";
 let toastUntil = 0;
 let lastMessage = "";
@@ -318,6 +341,9 @@ function installGame(next: Game, team: Team, overview: boolean) {
   groups.clear();
   keys.clear();
   lastUi = "";
+  rosterRows.clear();
+  $("#match-roster").replaceChildren();
+  lastProductionProgress = -1;
   lastMessage = "";
   seenElimination = false;
   audio.reset();
@@ -908,24 +934,32 @@ function updateUi() {
   const roster = $("#match-roster");
   roster.hidden = !multiplayer;
   if (multiplayer) {
-    roster.replaceChildren();
     const colors = ["#65e3db", "#ff7965", "#e9bb67", "#b998f5"];
     game.players.forEach((player, team) => {
       if (player.controller === "closed") return;
-      const row = document.createElement("div");
-      row.classList.toggle("eliminated", player.eliminated);
-      const dot = document.createElement("i");
-      dot.style.background = colors[team];
-      const name = document.createElement("strong");
-      name.textContent = player.name;
-      const status = document.createElement("span");
-      status.textContent = player.eliminated
-        ? "OUT"
-        : team === localTeam
-          ? "YOU"
-          : player.controller.toUpperCase();
-      row.append(dot, name, status);
-      roster.appendChild(row);
+      let entry = rosterRows.get(team);
+      if (!entry) {
+        const row = document.createElement("div");
+        const dot = document.createElement("i");
+        dot.style.background = colors[team];
+        const name = document.createElement("strong");
+        const status = document.createElement("span");
+        row.append(dot, name, status);
+        roster.appendChild(row);
+        entry = { row, name, status };
+        rosterRows.set(team, entry);
+      }
+      if (entry.row.classList.contains("eliminated") !== player.eliminated)
+        entry.row.classList.toggle("eliminated", player.eliminated);
+      setText(entry.name, player.name);
+      setText(
+        entry.status,
+        player.eliminated
+          ? "OUT"
+          : team === localTeam
+            ? "YOU"
+            : player.controller.toUpperCase(),
+      );
     });
   }
   const commander = friendlies.find((e) => e.kind === "commander");
@@ -1000,10 +1034,33 @@ function updateUi() {
           .join("")
       : `<div class="idle-message">${icon("orbit")}<div><strong>${first ? "Ready for your command." : "The world is yours to command."}</strong><p>${first ? "Right click to move. Attack move to engage along a route." : "Select your commander to build your first base."}</p></div></div>`;
   }
-  $("#production-line").innerHTML =
-    factory && factory.queue.length
-      ? `<div class="production-status"><i style="width:${factory.production * 100}%"></i><span>PRODUCING ${SPECS[factory.queue[0]].name.toUpperCase()} · ${Math.floor(factory.production * 100)}%</span><b>${factory.queue.length} QUEUED</b><button data-cancel title="Cancel current production">×</button></div>`
-      : `<div class="build-footnote">${mode === "build" ? '<span class="gold-dot"></span> Extractors require a gold deposit. Construction uses resources over time.' : mode === "produce" ? "Right click the surface to set a rally point." : "Scout unexplored terrain to locate hostile forces."}</div>`;
+  const producing = !!factory?.queue.length;
+  if (productionStatus.hidden === producing)
+    productionStatus.hidden = !producing;
+  if (productionFootnote.hidden !== producing)
+    productionFootnote.hidden = producing;
+  if (factory && producing) {
+    if (lastProductionProgress !== factory.production) {
+      productionBar.style.width = `${factory.production * 100}%`;
+      lastProductionProgress = factory.production;
+    }
+    setText(
+      productionLabel,
+      `PRODUCING ${SPECS[factory.queue[0]].name.toUpperCase()} · ${Math.floor(factory.production * 100)}%`,
+    );
+    setText(productionCount, `${factory.queue.length} QUEUED`);
+  } else {
+    if (productionDot.hidden === (mode === "build"))
+      productionDot.hidden = mode !== "build";
+    setText(
+      productionHint,
+      mode === "build"
+        ? " Extractors require a gold deposit. Construction uses resources over time."
+        : mode === "produce"
+          ? "Right click the surface to set a rally point."
+          : "Scout unexplored terrain to locate hostile forces.",
+    );
+  }
   const message = game.messages
     .filter((m) => m.team === undefined || m.team === localTeam)
     .at(-1);

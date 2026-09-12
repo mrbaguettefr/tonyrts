@@ -38,6 +38,32 @@ try {
   const page = await browser.newPage({
     viewport: { width: 1440, height: 900 },
   });
+  if (process.argv.includes("--benchmark")) {
+    // Instrument actual GL transfers only in the benchmark browser.
+    await page.addInitScript(() => {
+      const uploads = (window.__GL_UPLOADS__ = {
+        dataBytes: 0,
+        subDataBytes: 0,
+      });
+      const proto = WebGL2RenderingContext.prototype;
+      const bufferData = proto.bufferData;
+      const bufferSubData = proto.bufferSubData;
+      const bytes = (data, offset = 0, length = 0) => {
+        if (typeof data === "number") return data;
+        if (!data) return 0;
+        const unit = data.BYTES_PER_ELEMENT || 1;
+        return length ? length * unit : data.byteLength - offset * unit;
+      };
+      proto.bufferData = function (...args) {
+        uploads.dataBytes += bytes(args[1], args[3], args[4]);
+        return bufferData.apply(this, args);
+      };
+      proto.bufferSubData = function (...args) {
+        uploads.subDataBytes += bytes(args[2], args[3], args[4]);
+        return bufferSubData.apply(this, args);
+      };
+    });
+  }
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto(base);
@@ -197,6 +223,22 @@ try {
   await page.mouse.click(factoryHit.x, factoryHit.y);
   await page.waitForSelector('[data-kind="tank"]');
   await page.click('[data-kind="tank"]');
+  await page.waitForSelector(".production-status");
+  await page.evaluate(() => {
+    window.__productionControl = document.querySelector("[data-cancel]");
+    window.__productionControl.focus();
+  });
+  await page.waitForTimeout(400);
+  assert.equal(
+    await page.evaluate(
+      () =>
+        document.querySelector("[data-cancel]") ===
+          window.__productionControl &&
+        document.activeElement === window.__productionControl,
+    ),
+    true,
+    "Production updates preserve the focused cancel control",
+  );
   await page.evaluate(() => {
     for (let i = 0; i < 400; i++) window.__IRON_ORBIT__.tick(0.05);
   });
@@ -355,6 +397,8 @@ try {
       () =>
         new Promise((resolve) => {
           const frames = [];
+          window.__GL_UPLOADS__.dataBytes = 0;
+          window.__GL_UPLOADS__.subDataBytes = 0;
           let previous = performance.now();
           function sample(now) {
             frames.push(now - previous);
@@ -375,7 +419,21 @@ try {
                 selected: state.selected.size,
                 shots: game.shots.length,
                 resolution: `${innerWidth}x${innerHeight}`,
-                renderer: "Headless Chromium / environment GPU backend",
+                renderer: (() => {
+                  const gl = scene.canvas.getContext("webgl2");
+                  const extension = gl.getExtension(
+                    "WEBGL_debug_renderer_info",
+                  );
+                  return gl.getParameter(
+                    extension ? extension.UNMASKED_RENDERER_WEBGL : gl.RENDERER,
+                  );
+                })(),
+                bufferDataBytesPerFrame: Math.round(
+                  window.__GL_UPLOADS__.dataBytes / frames.length,
+                ),
+                bufferSubDataBytesPerFrame: Math.round(
+                  window.__GL_UPLOADS__.subDataBytes / frames.length,
+                ),
               });
             }
           }
@@ -385,6 +443,97 @@ try {
     await page.screenshot({ path: "test-results/benchmark.png" });
     console.log("200-unit benchmark:", JSON.stringify(stats));
   }
+  // Exercise persistent buffers through growth, shrinkage, empty and reuse.
+  const lifecycle = await page.evaluate(() => {
+    const { game, scene, state } = window.__IRON_ORBIT__;
+    const template = [...game.entities.values()][0];
+    const saved = {
+      entities: new Map(game.entities),
+      shots: game.shots,
+      explosions: game.explosions,
+      selected: state.selected,
+      paused: game.paused,
+      visible: game.visible[0].slice(),
+    };
+    game.paused = true;
+    game.visible[0].fill(1);
+    const cell = game.world.cells[game.world.spawns[0]];
+    const counts = [];
+    try {
+      for (const count of [0, 1, 4, 1, 0, 3]) {
+        game.entities.clear();
+        game.shots = [];
+        game.explosions = [];
+        state.selected = new Set();
+        for (let i = 0; i < count; i++) {
+          const id = 90000 + i;
+          game.entities.set(id, {
+            ...template,
+            id,
+            team: 0,
+            kind: "tank",
+            cell: cell.id,
+            position: [...cell.position],
+            orders: [],
+            path: [],
+            queue: [],
+          });
+          state.selected.add(id);
+          game.shots.push({
+            id,
+            team: 0,
+            from: [...cell.position],
+            to: [...cell.position],
+            age: 0,
+            duration: 1,
+          });
+          game.explosions.push({
+            id,
+            position: [...cell.position],
+            age: 0,
+            duration: 1,
+            size: 1,
+          });
+        }
+        scene.render(game, state, 0);
+        counts.push(scene.diagnostics().triangles);
+      }
+      // Plans use separate meshes and rings; both must clear and repopulate.
+      const builder = [...game.entities.values()][0];
+      builder.kind = "constructor";
+      state.selected.clear();
+      const plans = [];
+      for (const count of [1, 4, 1, 0, 3]) {
+        builder.orders = Array.from({ length: count }, (_, i) => ({
+          type: "build",
+          kind: "generator",
+          cell: cell.neighbors[i],
+        }));
+        scene.render(game, state, 0);
+        plans.push(scene.diagnostics().buildPlans);
+      }
+      return { counts, plans };
+    } finally {
+      game.entities.clear();
+      for (const [id, entity] of saved.entities) game.entities.set(id, entity);
+      game.shots = saved.shots;
+      game.explosions = saved.explosions;
+      state.selected = saved.selected;
+      game.paused = saved.paused;
+      game.visible[0].set(saved.visible);
+      scene.render(game, state, 0);
+    }
+  });
+  const [empty, one, four, oneAgain, emptyAgain, three] = lifecycle.counts;
+  assert.ok(one > empty, "Instances add visible geometry");
+  assert.equal(oneAgain, one);
+  assert.equal(emptyAgain, empty);
+  assert.equal(four - empty, 4 * (one - empty));
+  assert.equal(three - empty, 3 * (one - empty));
+  assert.deepEqual(lifecycle.plans, [1, 4, 1, 0, 3]);
+  console.log(
+    "Verified instance-buffer growth, shrinkage, empty batches and construction-plan reuse.",
+  );
   assert.deepEqual(errors, [], "No browser runtime errors");
 } finally {
   await browser?.close();

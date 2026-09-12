@@ -299,6 +299,15 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
     scene.add(mesh);
     return mesh;
   }
+  function uploadInstances(mesh: THREE.InstancedMesh) {
+    const attribute = mesh.instanceMatrix;
+    attribute.clearUpdateRanges();
+    if (mesh.count === 0) return;
+    // Ranges count scalar components, not matrices. Unused capacity never
+    // needs rewriting, including when the active instance count shrinks.
+    attribute.addUpdateRange(0, mesh.count * 16);
+    attribute.needsUpdate = true;
+  }
   const ringGeo = new THREE.RingGeometry(1, 1.12, 32);
   ringGeo.rotateX(-Math.PI / 2);
   const ringMat = new THREE.MeshBasicMaterial({
@@ -312,6 +321,13 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
   const ringBatch = batch(ringGeo, ringMat),
     barBatch = batch(barGeometry, ringMat);
   const dummy = new THREE.Object3D();
+  const normal = new THREE.Vector3();
+  const forward = new THREE.Vector3();
+  const right = new THREE.Vector3();
+  const position = new THREE.Vector3();
+  const endpoint = new THREE.Vector3();
+  const basis = new THREE.Matrix4();
+  const cameraTarget = new THREE.Vector3();
   const previewMat = new THREE.MeshBasicMaterial({
     color: 0x65e3db,
     transparent: true,
@@ -382,8 +398,9 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
         planBatches.set(key, mesh);
       }
       const cell = game.world.cells[plan.cell];
-      dummy.position.copy(v(cell.position)).addScaledVector(v(cell.dir), 0.2);
-      dummy.quaternion.setFromUnitVectors(UP, v(cell.dir));
+      normal.fromArray(cell.dir);
+      dummy.position.fromArray(cell.position).addScaledVector(normal, 0.2);
+      dummy.quaternion.setFromUnitVectors(UP, normal);
       dummy.scale.setScalar(1);
       dummy.updateMatrix();
       mesh.setMatrixAt(mesh.count++, dummy.matrix);
@@ -397,12 +414,12 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
         scene.add(label);
       }
       label.material = labelMaterial(plan.step);
-      label.position.copy(v(cell.position)).addScaledVector(v(cell.dir), 4.5);
+      label.position.fromArray(cell.position).addScaledVector(normal, 4.5);
       label.scale.set(3, 1.5, 1);
       label.visible = true;
     });
-    for (const mesh of [...planBatches.values(), ...planRings])
-      mesh.instanceMatrix.needsUpdate = true;
+    for (const mesh of planBatches.values()) uploadInstances(mesh);
+    for (const mesh of planRings) uploadInstances(mesh);
   }
   const shotGeo = new THREE.SphereGeometry(0.15, 6, 4);
   const shotBatches = TEAM.map((color) =>
@@ -439,9 +456,9 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
     );
     camera.up.copy(UP).applyQuaternion(orientation);
     camera.lookAt(
-      new THREE.Vector3(0, -4 * tactical, 60 * tactical).applyQuaternion(
-        orientation,
-      ),
+      cameraTarget
+        .set(0, -4 * tactical, 60 * tactical)
+        .applyQuaternion(orientation),
     );
     const width = container.clientWidth || innerWidth,
       height = container.clientHeight || innerHeight;
@@ -459,23 +476,24 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
     entity: Entity,
     interpolate = 0,
   ) {
-    const normal = v(entity.position).normalize();
-    let forward = v(entity.heading).projectOnPlane(normal);
+    position.fromArray(entity.position);
+    normal.copy(position).normalize();
+    forward.fromArray(entity.heading).projectOnPlane(normal);
     if (forward.lengthSq() < 0.0001)
-      forward = new THREE.Vector3(0, 0, 1).projectOnPlane(normal);
+      forward.set(0, 0, 1).projectOnPlane(normal);
     if (forward.lengthSq() < 0.0001)
-      forward = new THREE.Vector3(1, 0, 0).projectOnPlane(normal);
+      forward.set(1, 0, 0).projectOnPlane(normal);
     forward.normalize();
-    const right = new THREE.Vector3().crossVectors(normal, forward).normalize();
+    right.crossVectors(normal, forward).normalize();
     object.quaternion.setFromRotationMatrix(
-      new THREE.Matrix4().makeBasis(right, normal, forward),
+      basis.makeBasis(right, normal, forward),
     );
     if (interpolate > 0 && object.position.lengthSq() > 1) {
-      object.position.lerp(v(entity.position), 1 - Math.exp(-interpolate * 22));
+      object.position.lerp(position, 1 - Math.exp(-interpolate * 22));
       object.position.setLength(
-        Math.max(object.position.length(), v(entity.position).length()),
+        Math.max(object.position.length(), position.length()),
       );
-    } else object.position.copy(v(entity.position));
+    } else object.position.copy(position);
   }
   function visibleEntity(entity: Entity) {
     return (
@@ -549,7 +567,7 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
         if (!game.entities.has(id)) visuals.delete(id);
       for (const mesh of batches.values()) {
         mesh.count = 0;
-        mesh.userData.entityIds = [];
+        mesh.userData.entityIds.length = 0;
       }
       for (const entity of game.entities.values()) {
         let object = visuals.get(entity.id);
@@ -571,8 +589,7 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
         mesh.userData.entityIds.push(entity.id);
         mesh.setMatrixAt(mesh.count++, object.matrix);
       }
-      for (const mesh of batches.values())
-        mesh.instanceMatrix.needsUpdate = true;
+      for (const mesh of batches.values()) uploadInstances(mesh);
       ringBatch.count = 0;
       barBatch.count = 0;
       const selected = state.overview
@@ -584,16 +601,13 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
             );
       for (const entity of selected) {
         const object = visuals.get(entity.id)!;
-        dummy.position
-          .copy(object.position)
-          .addScaledVector(v(entity.position).normalize(), 0.16);
+        normal.fromArray(entity.position).normalize();
+        dummy.position.copy(object.position).addScaledVector(normal, 0.16);
         dummy.quaternion.copy(object.quaternion);
         dummy.scale.setScalar(SPECS[entity.kind].size + 0.45);
         dummy.updateMatrix();
         ringBatch.setMatrixAt(ringBatch.count++, dummy.matrix);
-        dummy.position
-          .copy(object.position)
-          .addScaledVector(v(entity.position).normalize(), 3.1);
+        dummy.position.copy(object.position).addScaledVector(normal, 3.1);
         dummy.quaternion.copy(camera.quaternion);
         dummy.scale.set(
           1.8 * Math.max(0.001, Math.min(1, entity.hp / SPECS[entity.kind].hp)),
@@ -603,8 +617,8 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
         dummy.updateMatrix();
         barBatch.setMatrixAt(barBatch.count++, dummy.matrix);
       }
-      ringBatch.instanceMatrix.needsUpdate = true;
-      barBatch.instanceMatrix.needsUpdate = true;
+      uploadInstances(ringBatch);
+      uploadInstances(barBatch);
       const signature = selected
         .map(
           (entity) =>
@@ -660,8 +674,8 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
       if (preview.visible) {
         const cell = game.world.cells[state.hoveredCell!];
         preview.geometry = model(state.building!, state.localTeam ?? 0);
-        preview.position.copy(v(cell.position));
-        preview.quaternion.setFromUnitVectors(UP, v(cell.dir));
+        preview.position.fromArray(cell.position);
+        preview.quaternion.setFromUnitVectors(UP, normal.fromArray(cell.dir));
         previewMat.color.set(
           canPlace(game, state.localTeam ?? 0, state.building!, cell.id).valid
             ? 0x6fffd0
@@ -690,11 +704,14 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
         )
           continue;
         dummy.position.lerpVectors(
-          v(shot.from),
-          v(shot.to),
+          position.fromArray(shot.from),
+          endpoint.fromArray(shot.to),
           Math.min(1, shot.age / shot.duration),
         );
-        dummy.position.addScaledVector(dummy.position.clone().normalize(), 1.4);
+        dummy.position.addScaledVector(
+          normal.copy(dummy.position).normalize(),
+          1.4,
+        );
         dummy.quaternion.identity();
         dummy.scale.setScalar(1.5);
         dummy.updateMatrix();
@@ -709,8 +726,8 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
         }
         if (!game.visible[state.localTeam ?? 0][cell]) continue;
         dummy.position
-          .copy(v(explosion.position))
-          .addScaledVector(v(explosion.position).normalize(), 1);
+          .fromArray(explosion.position)
+          .addScaledVector(normal.fromArray(explosion.position).normalize(), 1);
         dummy.quaternion.identity();
         dummy.scale.setScalar(
           explosion.size * (0.3 + explosion.age / explosion.duration),
@@ -718,8 +735,8 @@ export function createScene(container: HTMLElement, initial: Game): SceneApi {
         dummy.updateMatrix();
         explosionBatch.setMatrixAt(explosionBatch.count++, dummy.matrix);
       }
-      for (const mesh of shotBatches) mesh.instanceMatrix.needsUpdate = true;
-      explosionBatch.instanceMatrix.needsUpdate = true;
+      for (const mesh of shotBatches) uploadInstances(mesh);
+      uploadInstances(explosionBatch);
       renderer.render(scene, camera);
     },
     pick(x, y) {
