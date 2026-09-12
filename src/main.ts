@@ -97,7 +97,7 @@ const $ = <T extends HTMLElement = HTMLElement>(s: string) =>
   document.querySelector<T>(s)!;
 app.insertAdjacentHTML(
   "beforeend",
-  `<aside id="audio-panel" class="audio-controls" hidden><div class="eyebrow">AUDIO / ORIGINAL SCORE</div><label for="sfx-volume">Sound effects<input id="sfx-volume" type="range" min="0" max="100" aria-label="Sound effects volume"/></label><label for="music-volume">Music<input id="music-volume" type="range" min="0" max="100" aria-label="Music volume"/></label><button id="audio-mute" class="secondary-button">MUTE ALL</button><p>Procedural ambient music and tactical effects. Your mix is saved on this device.</p></aside>`,
+  `<aside id="audio-panel" class="audio-controls" hidden><div class="eyebrow">AUDIO / ORIGINAL SCORE</div><label for="sfx-volume">Sound effects<input id="sfx-volume" type="range" min="0" max="100" aria-label="Sound effects volume"/></label><label for="music-volume">Music<input id="music-volume" type="range" min="0" max="100" aria-label="Music volume"/></label><button id="audio-mute" class="secondary-button">MUTE ALL</button><p>Three industrial war tracks and tactical effects. Your mix is saved on this device.</p></aside>`,
 );
 let game!: Game;
 let scene!: SceneApi;

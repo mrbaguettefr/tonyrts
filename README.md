@@ -74,7 +74,7 @@ Resources are spent continuously while building. A shortage slows construction; 
 | Home                            | Select and focus your commander                                       |
 | Esc                             | Cancel command mode or pause/resume                                   |
 
-The speaker control opens separate **Sound effects** and **Music** volume sliders plus master mute. Original procedural ambient music accompanies distinct selection, movement, construction, production, combat, and outcome cues. Sound unlocks after a user gesture; volume and mute preferences persist on the device. Effects respect fog of war.
+The speaker control opens separate **Sound effects** and **Music** volume sliders plus master mute. Three original synthesized industrial RTS tracks—**Iron Mobilization**, **Continental Siege**, and **Global War Machine**—combine driving bass, heavy drums, metallic percussion, and arranged buildups and breakdowns. Playback starts with a random track, then cycles through the three in order. The score accompanies distinct selection, movement, construction, production, combat, and outcome cues. Sound unlocks after a user gesture; volume and mute preferences persist on the device. Effects respect fog of war.
 
 The other top-right controls open help and the command menu. Solo play pauses when the window loses focus; online matches continue. Restart solo games with the same seed or return to the multiplayer lobby after a match.
 

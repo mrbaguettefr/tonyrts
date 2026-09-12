@@ -1,3 +1,4 @@
+import { MUSIC_TRACKS, TRACK_STEPS, musicStep } from "./music";
 import { SPECS } from "./simulation";
 import type { Game, Team } from "./types";
 
@@ -28,6 +29,7 @@ export interface AudioEngine {
     unlocked: boolean;
     musicPlaying: boolean;
     activeVoices: number;
+    musicTrack: string | null;
     muted: boolean;
   };
   dispose(): void;
@@ -57,6 +59,7 @@ export function createAudio(): AudioEngine {
     ducked = false,
     nextBeat = 0,
     beat = 0;
+  let trackIndex: number | undefined;
   const voices = new Map<OscillatorNode, GainNode>();
   const lastCue = new Map<string, number>();
   let previous = new Map<number, { hp: number; progress: number }>();
@@ -168,44 +171,20 @@ export function createAudio(): AudioEngine {
     // Rebase after background throttling; never play a backlog of missed notes.
     if (nextBeat < context.currentTime - 0.2)
       nextBeat = context.currentTime + 0.03;
-    const step = 60 / 84 / 2;
     while (nextBeat < context.currentTime + 0.18) {
       const delay = Math.max(0, nextBeat - context.currentTime);
-      const roots = [110, 87.307, 130.813, 97.999];
-      const root = roots[Math.floor(beat / 16) % roots.length]!;
-      if (beat % 16 === 0) {
-        [1, 1.189207, 1.498307].forEach((ratio) =>
-          tone(
-            root * 2 * ratio,
-            step * 17,
-            0.028,
-            "sine",
-            delay,
-            root * 2 * ratio,
-            true,
-          ),
-        );
-      }
-      if (beat % 4 === 0)
-        tone(root / 2, step * 3.7, 0.12, "triangle", delay, root / 2, true);
-      const intervals = [
-        1, 1.498307, 2, 2.378414, 2, 1.498307, 1.189207, 1.498307,
-      ];
-      tone(
-        root * 2 * intervals[beat % 8]!,
-        step * 0.75,
-        0.032,
-        "triangle",
-        delay,
-        root * 2 * intervals[beat % 8]!,
-        true,
-      );
-      if (beat % 4 === 0) tone(95, 0.15, 0.15, "sine", delay, 35, true);
-      if (beat % 4 === 2) tone(740, 0.045, 0.024, "square", delay, 130, true);
-      nextBeat += step;
+      const track = trackIndex!;
+      for (const note of musicStep(track, beat))
+        tone(note.hz, note.duration, note.amplitude, note.type, delay, note.targetHz, true);
+      nextBeat += 60 / MUSIC_TRACKS[track]!.bpm / 4;
       beat++;
+      if (beat === TRACK_STEPS) {
+        beat = 0;
+        trackIndex = (track + 1) % MUSIC_TRACKS.length;
+      }
     }
   }
+
   function reset() {
     previous.clear();
     shotIds.clear();
@@ -242,6 +221,7 @@ export function createAudio(): AudioEngine {
       }
       if (disposed || context.state !== "running") return;
       if (!timer) {
+        trackIndex = Math.floor(Math.random() * MUSIC_TRACKS.length);
         nextBeat = context.currentTime + 0.03;
         timer = setInterval(schedule, 50);
         schedule();
@@ -327,6 +307,7 @@ export function createAudio(): AudioEngine {
         !settings.muted &&
         settings.music > 0,
       activeVoices: voices.size,
+      musicTrack: trackIndex === undefined ? null : MUSIC_TRACKS[trackIndex]!.title,
       muted: settings.muted,
     }),
     dispose() {
