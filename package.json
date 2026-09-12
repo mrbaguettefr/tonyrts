@@ -8,6 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 0.0.0.0",
     "test": "node --import tsx --test tests/*.test.ts",
+    "benchmark": "node --import tsx tests/benchmark.ts",
     "test:browser": "node tests/browser.mjs",
     "dev:client": "vite --host 0.0.0.0",
     "server": "node --import tsx server/main.ts",

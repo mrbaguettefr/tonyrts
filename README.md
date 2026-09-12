@@ -99,6 +99,7 @@ npm run build
 npx playwright install chromium
 npm run test:browser
 npm run test:multiplayer
+npm run benchmark
 npm run test:browser -- --benchmark
 ```
 
@@ -108,7 +109,9 @@ The solo browser suite starts an isolated local Vite server, exercises actual po
 
 Automated simulation tests cover terrain connectivity and repeatability, mountains and occupancy, resource stalls, construction, production caps, visibility, combat, queued orders, and complete autonomous matches across several seeds. Browser checks cover deployment, movement, construction and resumption, production, pause/help, control groups, occlusion, restart, defeat, and replay.
 
-The optional benchmark creates 200 mobile units, selects 100, and runs combat and fog at 1920×1080. It increases both health and maximum health only in the benchmark to keep the army size stable. FPS depends on the browser’s graphics backend; software-rendered headless results are not a hardware GPU guarantee.
+`npm run benchmark` reports three repetitions of 200- and 400-unit CPU fixtures, separating the first fog-update tick from 79 subsequent ticks. It also measures four player-filtered snapshots plus JSON serialization, reporting median, p95, maximum time, and payload bytes. Run it without other tests or benchmarks competing for CPU; setup time is reported separately. To compare against a compatible baseline checkout with dependencies installed, use `npm run benchmark -- /path/to/baseline`; it alternates execution order in the same process.
+
+The optional browser benchmark creates 200 mobile units, selects 100, and runs combat and fog at 1920×1080. It increases both health and maximum health only in the benchmark to keep the army size stable. It reports the actual graphics backend and average WebGL buffer upload bytes per frame, measured only in the benchmark browser. FPS depends on the browser’s graphics backend; software-rendered headless results are not a hardware GPU guarantee.
 
 ## Current boundaries
 
