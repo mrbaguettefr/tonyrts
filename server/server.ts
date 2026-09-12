@@ -52,22 +52,30 @@ export function snapshotFor(game: Game, team: Team): GameSnapshot {
   const visible = game.visible[team];
   const seen = (position: [number, number, number]) =>
     !!visible[game.world.nearest(position)];
+  const entities: GameSnapshot["entities"] = [];
+  for (const e of game.entities.values()) {
+    const own = e.team === team;
+    if (!own && !visible[e.cell]) continue;
+    entities.push({
+      id: e.id,
+      team: e.team,
+      kind: e.kind,
+      cell: e.cell,
+      position: [...e.position],
+      heading: [...e.heading],
+      hp: e.hp,
+      progress: e.progress,
+      cooldown: e.cooldown,
+      orders: own ? e.orders.map((order) => ({ ...order })) : [],
+      path: own ? [...e.path] : [],
+      queue: own ? [...e.queue] : [],
+      production: own ? e.production : 0,
+      rally: own ? e.rally : null,
+    });
+  }
   return {
     time: game.time,
-    entities: [...game.entities.values()]
-      .filter((e) => e.team === team || visible[e.cell])
-      .map((e) =>
-        e.team === team
-          ? structuredClone(e)
-          : {
-              ...structuredClone(e),
-              orders: [],
-              path: [],
-              queue: [],
-              production: 0,
-              rally: null,
-            },
-      ),
+    entities,
     players: game.players.map((player, i) =>
       i === team
         ? { ...player }
@@ -87,8 +95,12 @@ export function snapshotFor(game: Game, team: Team): GameSnapshot {
     explored: Array.from(game.explored[team]),
     winner: game.winner,
     finished: game.finished,
-    shots: game.shots.filter((shot) => seen(shot.from) && seen(shot.to)),
-    explosions: game.explosions.filter((effect) => seen(effect.position)),
+    shots: game.shots
+      .filter((shot) => seen(shot.from) && seen(shot.to))
+      .map((shot) => ({ ...shot, from: [...shot.from], to: [...shot.to] })),
+    explosions: game.explosions
+      .filter((effect) => seen(effect.position))
+      .map((effect) => ({ ...effect, position: [...effect.position] })),
     messages: game.messages
       .filter((message) => message.team === undefined || message.team === team)
       .map((message) => ({ ...message })),

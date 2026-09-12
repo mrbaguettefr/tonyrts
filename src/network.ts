@@ -60,6 +60,12 @@ export class NetworkClient {
               controller: slot.controller,
             })),
           );
+          // createGame initializes every commander's sight. Only our team's
+          // authoritative fog may be exposed to callbacks on a network client.
+          for (let team = 0; team < this.game.players.length; team++) {
+            this.game.visible[team].fill(0);
+            this.game.explored[team].fill(0);
+          }
           this.apply(message.snapshot);
           this.callbacks.onMatch(this.game, this.team, message.room);
         } else if (message.type === "snapshot") {
@@ -92,9 +98,11 @@ export class NetworkClient {
   }
   private apply(snapshot: GameSnapshot): void {
     if (!this.game) return;
+    this.game.entities.clear();
+    for (const entity of snapshot.entities)
+      this.game.entities.set(entity.id, entity);
     Object.assign(this.game, {
       time: snapshot.time,
-      entities: new Map(snapshot.entities.map((e) => [e.id, e])),
       players: snapshot.players,
       winner: snapshot.winner,
       finished: snapshot.finished,
@@ -102,16 +110,8 @@ export class NetworkClient {
       explosions: snapshot.explosions,
       messages: snapshot.messages,
     });
-    this.game.visible = this.game.players.map((_, i) =>
-      i === this.team
-        ? Uint8Array.from(snapshot.visible)
-        : new Uint8Array(this.game!.world.cells.length),
-    );
-    this.game.explored = this.game.players.map((_, i) =>
-      i === this.team
-        ? Uint8Array.from(snapshot.explored)
-        : new Uint8Array(this.game!.world.cells.length),
-    );
+    this.game.visible[this.team].set(snapshot.visible);
+    this.game.explored[this.team].set(snapshot.explored);
   }
   send(message: ClientMessage): void {
     if (this.connected) this.socket!.send(JSON.stringify(message));
